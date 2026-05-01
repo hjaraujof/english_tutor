@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>English Tutor</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>English Tutor</h1>
+    <div id="status" class="status">loading…</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab is-active" data-tab="record">Record</button>
+    <button class="tab" data-tab="paste">Paste text</button>
+    <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="converse">Converse</button>
+  </nav>
+
+  <main>
+    <section class="panel" id="panel-record" data-panel="record">
+      <div class="recorder">
+        <button id="recordButton" class="record-button">Start recording</button>
+        <span id="recordTimer" class="record-timer">00:00</span>
+        <span id="recordHint" class="record-hint">Press the button, speak for 20–60s, press it again to review.</span>
+      </div>
+      <div id="recordResult" class="result"></div>
+    </section>
+
+    <section class="panel hidden" id="panel-paste" data-panel="paste">
+      <textarea id="pasteText" rows="10" placeholder="Paste a paragraph of your writing here…"></textarea>
+      <button id="pasteSubmit" class="primary">Review writing</button>
+      <div id="pasteResult" class="result"></div>
+    </section>
+
+    <section class="panel hidden" id="panel-history" data-panel="history">
+      <div class="trends">
+        <div class="trend">
+          <h3>Words per minute</h3>
+          <canvas id="chartWPM" width="600" height="180"></canvas>
+        </div>
+        <div class="trend">
+          <h3>Filler ratio</h3>
+          <canvas id="chartFiller" width="600" height="180"></canvas>
+        </div>
+        <div class="trend">
+          <h3>Type–token ratio</h3>
+          <canvas id="chartTTR" width="600" height="180"></canvas>
+        </div>
+      </div>
+      <h3>Recurring error types (last 30 days)</h3>
+      <ul id="recurringList" class="recurring"></ul>
+      <h3>Recent sessions</h3>
+      <ul id="historyList" class="history"></ul>
+    </section>
+
+    <section class="panel hidden" id="panel-converse" data-panel="converse">
+      <div class="recorder">
+        <button id="liveButton" class="record-button">Start conversation</button>
+        <span id="liveState" class="record-hint">idle</span>
+      </div>
+      <div id="liveLog" class="live-log"></div>
+      <div id="liveLatency" class="live-latency"></div>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

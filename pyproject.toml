@@ -1,0 +1,38 @@
+[project]
+name = "english-tutor"
+version = "0.1.0"
+description = "Local English tutor (grammar review + speaking fluency) with faster-whisper + llama.cpp + Piper"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "faster-whisper>=1.0.3",
+    "tomli>=2.0; python_version < '3.11'",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+phase2 = [
+    "silero-vad>=5.1",
+    "torch>=2.2",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires running llama-server",
+]

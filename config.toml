@@ -1,0 +1,27 @@
+# english_tutor runtime configuration
+
+[user]
+# Native language informs L1-interference targeting in grammar review prompts.
+native_language = "Spanish"
+cefr_level = "B2"
+
+[llm]
+base_url = "http://127.0.0.1:8080"
+model = "Qwen2.5-3B-Instruct"
+temperature = 0.2
+max_tokens = 1024
+draft_enabled = false
+
+[asr]
+model_size = "small.en"
+device = "cuda"
+compute_type = "int8_float16"
+beam_size = 1
+
+[tts]
+voice = "en_US-amy-medium"
+
+[server]
+host = "127.0.0.1"
+port = 8765
+data_dir = "data"
