@@ -5,7 +5,11 @@ review + metrics for trend display in the History tab.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,11 +20,24 @@ from backend.analysis import compute_metrics
 from backend.asr import ASR
 
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+ALLOWED_AUDIO_SUFFIXES = {".webm", ".wav", ".ogg", ".mp3", ".m4a"}
 
 
 def _get_state(request: Request):
     return request.app.state
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("could not remove temp audio %s: %s", path, exc)
 
 
 @router.post("")
@@ -33,21 +50,35 @@ async def create_session(
     config = state.config
     llm = state.llm
 
-    suffix = Path(audio.filename or "audio.webm").suffix or ".webm"
+    suffix = Path(audio.filename or "").suffix.lower()
+    if suffix not in ALLOWED_AUDIO_SUFFIXES:
+        suffix = ".webm"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     file_id = uuid.uuid4().hex[:8]
     audio_dir: Path = config.server.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_path = audio_dir / f"{timestamp}_{file_id}{suffix}"
 
-    with audio_path.open("wb") as handle:
-        shutil.copyfileobj(audio.file, handle)
-    await audio.close()
-
+    temp_handle = tempfile.NamedTemporaryFile(dir=audio_dir, suffix=suffix + ".part", delete=False)
+    temp_path = Path(temp_handle.name)
     try:
-        transcription = asr.transcribe(audio_path)
+        try:
+            with temp_handle:
+                shutil.copyfileobj(audio.file, temp_handle)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="could not store uploaded audio") from exc
+        finally:
+            await audio.close()
+
+        transcription = await asyncio.to_thread(asr.transcribe, temp_path)
+    except HTTPException:
+        _unlink_quietly(temp_path)
+        raise
     except Exception as exc:  # noqa: BLE001 - surface ASR failure to client
+        _unlink_quietly(temp_path)
         raise HTTPException(status_code=500, detail=f"ASR failed: {exc}") from exc
+
+    os.replace(temp_path, audio_path)
 
     metrics = compute_metrics(
         text=transcription.text,
@@ -73,12 +104,14 @@ async def create_session(
         )
         review_dump = review.model_dump(by_alias=True)
 
-    session_id = db.insert_session(
-        kind="audio",
-        transcript=transcription.text,
-        review=review_dump,
-        metrics=metrics.to_dict(),
-        audio_path=audio_path,
+    session_id = await asyncio.to_thread(
+        lambda: db.insert_session(
+            kind="audio",
+            transcript=transcription.text,
+            review=review_dump,
+            metrics=metrics.to_dict(),
+            audio_path=audio_path,
+        )
     )
 
     return {
@@ -104,14 +137,19 @@ async def create_session(
 
 @router.get("")
 async def list_sessions(state=Depends(_get_state), limit: int = 50):
-    return {"sessions": state.db.list_sessions(limit=limit)}
+    sessions = await asyncio.to_thread(state.db.list_sessions, limit=limit)
+    return {"sessions": sessions}
 
 
 @router.get("/recurring-errors")
 async def recurring_errors(state=Depends(_get_state), days: int = 30, min_count: int = 3):
-    return {"recurring": state.db.recurring_error_types(lookback_days=days, min_count=min_count)}
+    recurring = await asyncio.to_thread(
+        state.db.recurring_error_types, lookback_days=days, min_count=min_count
+    )
+    return {"recurring": recurring}
 
 
 @router.get("/trend/{metric_key}")
-async def metric_trend(metric_key: str, state=Depends(_get_state), limit: int = 50):
-    return {"key": metric_key, "points": state.db.metric_trend(metric_key, limit=limit)}
+async def metric_trend(metric_key: str, state=Depends(_get_state)):
+    points = await asyncio.to_thread(state.db.metric_trend, metric_key)
+    return {"key": metric_key, "points": points}

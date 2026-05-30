@@ -236,8 +236,8 @@ async function loadHistory() {
     const fillerResponse = await fetch("/api/sessions/trend/filler_ratio");
     const ttrResponse = await fetch("/api/sessions/trend/type_token_ratio");
     drawLineChart($("#chartWPM"), trendWPM.map((point) => point.value));
-    drawLineChart($("#chartFiller"), (await fillerResponse.json()).points.map((point) => point.value));
-    drawLineChart($("#chartTTR"), (await ttrResponse.json()).points.map((point) => point.value));
+    drawLineChart($("#chartFiller"), ((await fillerResponse.json()).points || []).map((point) => point.value));
+    drawLineChart($("#chartTTR"), ((await ttrResponse.json()).points || []).map((point) => point.value));
 
     $("#recurringList").innerHTML = recurring.length
       ? recurring.map((row) => `<li><strong>${escapeHtml(row.type)}</strong> · ${row.count} occurrences</li>`).join("")

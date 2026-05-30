@@ -17,6 +17,7 @@ Wire protocol (client → server):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -35,6 +36,7 @@ FRAME_MS = 32
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
 SILENCE_END_MS = 600
 MAX_UTTERANCE_SECONDS = 30.0
+MAX_HISTORY_TURNS = 12
 
 
 _CORRECTION_RE = re.compile(r"↪\s*\"([^\"]+)\"\s*→\s*\"([^\"]+)\"\s*\(([^)]+)\)")
@@ -97,7 +99,10 @@ async def live_socket(websocket: WebSocket):
                 break
 
             if "text" in message and message["text"]:
-                payload = json.loads(message["text"])
+                try:
+                    payload = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
                 if payload.get("type") == "end":
                     break
                 continue
@@ -140,6 +145,8 @@ async def live_socket(websocket: WebSocket):
 
                     reply, correction = _split_reply_and_correction(accumulated)
                     history.append({"role": "assistant", "content": accumulated})
+                    if len(history) > 1 + 2 * MAX_HISTORY_TURNS:
+                        history = [history[0]] + history[-2 * MAX_HISTORY_TURNS:]
                     await websocket.send_text(json.dumps({"type": "reply_end"}))
                     if correction:
                         await websocket.send_text(json.dumps({"type": "correction", **correction}))
@@ -204,5 +211,5 @@ async def _transcribe_pcm(asr, samples: np.ndarray) -> str:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
         temp_file.write(buffer.getvalue())
         temp_file.flush()
-        transcription = asr.transcribe(Path(temp_file.name))
+        transcription = await asyncio.to_thread(asr.transcribe, Path(temp_file.name))
     return transcription.text
