@@ -2,7 +2,7 @@
 name = "english-tutor"
 version = "0.1.0"
 description = "Local English tutor (grammar review + speaking fluency) with faster-whisper + llama.cpp + Piper"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.48.0",
@@ -10,7 +10,6 @@ dependencies = [
     "pydantic>=2.13.4",
     "httpx>=0.28.1",
     "faster-whisper>=1.2.1",
-    "tomli>=2.0; python_version < '3.11'",
     "numpy>=2.4.6",
 ]
 
