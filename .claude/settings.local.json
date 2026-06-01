@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(rtk find *)",
-      "Bash(rtk git *)"
+      "Bash(rtk git *)",
+      "Read(//home/harry/Documents/journals/claude-code/journals/**)",
+      "Read(//home/harry/Documents/journals/claude-code/conversations/**)"
     ]
   }
 }
