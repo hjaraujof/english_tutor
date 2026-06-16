@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.48.0",
-    "python-multipart>=0.0.29",
+    "python-multipart>=0.0.31",
     "pydantic>=2.13.4",
     "httpx>=0.28.1",
     "faster-whisper>=1.2.1",
