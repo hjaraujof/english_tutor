@@ -16,7 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 phase2 = [
     "silero-vad>=6.2.1",
-    "torch>=2.12.0",
+    "torch>=2.13.0",
 ]
 dev = [
     "pytest>=9.0.3",
