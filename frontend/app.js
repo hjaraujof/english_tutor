@@ -229,6 +229,34 @@ async function fetchJson(url) {
   return response.json();
 }
 
+let historySessions = new Map();
+
+const historyListElement = $("#historyList");
+if (historyListElement) {
+  historyListElement.addEventListener("click", (event) => {
+    if (event.target.closest(".detail")) return; // interacting with the expanded review/player
+    const item = event.target.closest(".history-item");
+    if (!item) return;
+    const detail = item.querySelector(".detail");
+    if (!detail) return;
+    const nowHidden = detail.classList.toggle("hidden");
+    if (!nowHidden && !detail.dataset.rendered) {
+      const session = historySessions.get(Number(item.dataset.sessionId));
+      if (!session) return;
+      renderReview(detail, session);
+      if (session.has_audio) {
+        const player = document.createElement("audio");
+        player.controls = true;
+        player.preload = "none";
+        player.className = "session-audio";
+        player.src = `/api/sessions/${session.id}/audio`;
+        detail.prepend(player);
+      }
+      detail.dataset.rendered = "1";
+    }
+  });
+}
+
 async function loadHistory() {
   try {
     const [trendWPMBody, recurringBody, sessionsBody] = await Promise.all([
@@ -250,13 +278,15 @@ async function loadHistory() {
       ? recurring.map((row) => `<li><strong>${escapeHtml(row.type)}</strong> · ${row.count} occurrences</li>`).join("")
       : "<li>No recurring patterns yet — keep practicing.</li>";
 
+    historySessions = new Map(sessions.map((session) => [session.id, session]));
     $("#historyList").innerHTML = sessions.length
       ? sessions
           .map((session) => {
             const wpm = session.metrics?.words_per_minute ?? "—";
             const errors = session.review?.corrections?.length ?? 0;
             const snippet = session.transcript.slice(0, 90).replace(/\s+/g, " ");
-            return `<li><span class="when">${escapeHtml(session.created_at)}</span><strong>${session.kind}</strong> · WPM ${wpm} · ${errors} corrections · <em>${escapeHtml(snippet)}…</em></li>`;
+            const audioBadge = session.has_audio ? " · 🔊" : "";
+            return `<li class="history-item" data-session-id="${session.id}"><span class="when">${escapeHtml(session.created_at)}</span><strong>${session.kind}</strong> · WPM ${wpm} · ${errors} corrections${audioBadge} · <em>${escapeHtml(snippet)}…</em><div class="detail hidden"></div></li>`;
           })
           .join("")
       : "<li>No sessions yet — record or paste something to start.</li>";

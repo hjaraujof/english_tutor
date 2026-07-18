@@ -104,7 +104,7 @@ class Database:
     def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, created_at, kind, transcript, review_json, metrics_json "
+                "SELECT id, created_at, kind, audio_path, transcript, review_json, metrics_json "
                 "FROM sessions ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -115,12 +115,20 @@ class Database:
                     "id": row["id"],
                     "created_at": row["created_at"],
                     "kind": row["kind"],
+                    "has_audio": row["audio_path"] is not None,
                     "transcript": row["transcript"],
                     "review": json.loads(row["review_json"]),
                     "metrics": json.loads(row["metrics_json"]),
                 }
             )
         return result
+
+    def session_audio_path(self, session_id: int) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT audio_path FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return row["audio_path"] if row else None
 
     def recurring_error_types(self, lookback_days: int = 30, min_count: int = 3) -> list[dict[str, Any]]:
         with self._connect() as connection:

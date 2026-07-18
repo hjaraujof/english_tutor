@@ -123,6 +123,28 @@ def test_blocking_asr_and_db_run_off_event_loop(client):
     assert observed["db_on_loop"] is False
 
 
+def test_session_audio_roundtrip_and_404s(client):
+    upload = client.post(
+        "/api/sessions",
+        files={"audio": ("clip.wav", b"fake-audio-bytes", "audio/wav")},
+    )
+    audio_id = upload.json()["id"]
+    text = client.post("/api/review", json={"text": "He go to school."})
+    text_id = text.json()["id"]
+
+    sessions = {session["id"]: session for session in client.get("/api/sessions").json()["sessions"]}
+    assert sessions[audio_id]["has_audio"] is True
+    assert sessions[text_id]["has_audio"] is False
+
+    audio_response = client.get(f"/api/sessions/{audio_id}/audio")
+    assert audio_response.status_code == 200
+    assert audio_response.content == b"fake-audio-bytes"
+    assert audio_response.headers["content-type"].startswith("audio/wav")
+
+    assert client.get(f"/api/sessions/{text_id}/audio").status_code == 404
+    assert client.get("/api/sessions/99999/audio").status_code == 404
+
+
 def test_wpm_trend_excludes_text_sessions(client):
     client.post("/api/review", json={"text": "He go to school yesterday."})
     client.post(

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 
 from backend.analysis import compute_metrics
 from backend.asr import ASR
@@ -176,3 +177,24 @@ async def metric_trend(metric_key: str, state=Depends(_get_state)):
     kinds = ("audio", "live") if metric_key in TIME_BASED_METRICS else None
     points = await asyncio.to_thread(state.db.metric_trend, metric_key, kinds)
     return {"key": metric_key, "points": points}
+
+
+AUDIO_MEDIA_TYPES = {
+    ".webm": "audio/webm",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+}
+
+
+@router.get("/{session_id}/audio")
+async def session_audio(session_id: int, state=Depends(_get_state)):
+    audio_path = await asyncio.to_thread(state.db.session_audio_path, session_id)
+    if not audio_path:
+        raise HTTPException(status_code=404, detail="session has no audio")
+    path = Path(audio_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="audio file missing on disk")
+    media_type = AUDIO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media_type)
