@@ -21,6 +21,12 @@ def test_parse_review_falls_back_on_non_json():
     assert "could not be parsed" in review.overall.summary
 
 
+def test_parse_review_falls_back_on_null_content():
+    review = _client()._parse_review(None)
+    assert review.corrections == []
+    assert "could not be parsed" in review.overall.summary
+
+
 def test_parse_review_validates_good_json():
     payload = (
         '{"corrections": [], "fluency_notes": [], "vocabulary_suggestions": [], '

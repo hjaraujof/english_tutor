@@ -89,7 +89,7 @@ async function uploadAudio(blob) {
     const response = await fetch("/api/sessions", { method: "POST", body: formData });
     if (!response.ok) {
       const text = await response.text();
-      result.innerHTML = `<p class="err">Error: ${response.status} ${text}</p>`;
+      result.innerHTML = `<p class="err">Error: ${response.status} ${escapeHtml(text)}</p>`;
       return;
     }
     const data = await response.json();
@@ -113,7 +113,7 @@ $("#pasteSubmit").addEventListener("click", async () => {
     });
     if (!response.ok) {
       const body = await response.text();
-      result.innerHTML = `<p class="err">Error: ${response.status} ${body}</p>`;
+      result.innerHTML = `<p class="err">Error: ${response.status} ${escapeHtml(body)}</p>`;
       return;
     }
     const data = await response.json();
@@ -168,6 +168,7 @@ function renderReview(container, data) {
     ["Fillers", metrics.filler_count],
     ["Filler ratio", metrics.filler_ratio],
     ["Longest pause (s)", metrics.longest_pause_seconds],
+    ["Est. CEFR", review.overall?.estimated_cefr],
   ];
 
   container.innerHTML = `
@@ -222,35 +223,43 @@ function renderReview(container, data) {
 }
 
 // ---------- History ----------
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} → HTTP ${response.status}`);
+  return response.json();
+}
+
 async function loadHistory() {
   try {
-    const [trendResponse, recurringResponse, sessionsResponse] = await Promise.all([
-      fetch("/api/sessions/trend/words_per_minute"),
-      fetch("/api/sessions/recurring-errors"),
-      fetch("/api/sessions"),
+    const [trendWPMBody, recurringBody, sessionsBody] = await Promise.all([
+      fetchJson("/api/sessions/trend/words_per_minute"),
+      fetchJson("/api/sessions/recurring-errors"),
+      fetchJson("/api/sessions"),
     ]);
-    const trendWPM = (await trendResponse.json()).points || [];
-    const recurring = (await recurringResponse.json()).recurring || [];
-    const sessions = (await sessionsResponse.json()).sessions || [];
+    const trendWPM = trendWPMBody.points || [];
+    const recurring = recurringBody.recurring || [];
+    const sessions = sessionsBody.sessions || [];
 
-    const fillerResponse = await fetch("/api/sessions/trend/filler_ratio");
-    const ttrResponse = await fetch("/api/sessions/trend/type_token_ratio");
+    const fillerBody = await fetchJson("/api/sessions/trend/filler_ratio");
+    const ttrBody = await fetchJson("/api/sessions/trend/type_token_ratio");
     drawLineChart($("#chartWPM"), trendWPM.map((point) => point.value));
-    drawLineChart($("#chartFiller"), ((await fillerResponse.json()).points || []).map((point) => point.value));
-    drawLineChart($("#chartTTR"), ((await ttrResponse.json()).points || []).map((point) => point.value));
+    drawLineChart($("#chartFiller"), (fillerBody.points || []).map((point) => point.value));
+    drawLineChart($("#chartTTR"), (ttrBody.points || []).map((point) => point.value));
 
     $("#recurringList").innerHTML = recurring.length
       ? recurring.map((row) => `<li><strong>${escapeHtml(row.type)}</strong> · ${row.count} occurrences</li>`).join("")
       : "<li>No recurring patterns yet — keep practicing.</li>";
 
-    $("#historyList").innerHTML = sessions
-      .map((session) => {
-        const wpm = session.metrics?.words_per_minute ?? "—";
-        const errors = session.review?.corrections?.length ?? 0;
-        const snippet = session.transcript.slice(0, 90).replace(/\s+/g, " ");
-        return `<li><span class="when">${escapeHtml(session.created_at)}</span><strong>${session.kind}</strong> · WPM ${wpm} · ${errors} corrections · <em>${escapeHtml(snippet)}…</em></li>`;
-      })
-      .join("");
+    $("#historyList").innerHTML = sessions.length
+      ? sessions
+          .map((session) => {
+            const wpm = session.metrics?.words_per_minute ?? "—";
+            const errors = session.review?.corrections?.length ?? 0;
+            const snippet = session.transcript.slice(0, 90).replace(/\s+/g, " ");
+            return `<li><span class="when">${escapeHtml(session.created_at)}</span><strong>${session.kind}</strong> · WPM ${wpm} · ${errors} corrections · <em>${escapeHtml(snippet)}…</em></li>`;
+          })
+          .join("")
+      : "<li>No sessions yet — record or paste something to start.</li>";
   } catch (err) {
     setStatus(`history error: ${err.message}`);
   }
@@ -295,8 +304,6 @@ function drawLineChart(canvas, values) {
 
 // ---------- Live conversation (Phase 2) ----------
 const LIVE_SAMPLE_RATE = 16000;
-const LIVE_FRAME_MS = 32;
-const LIVE_FRAME_SAMPLES = (LIVE_SAMPLE_RATE * LIVE_FRAME_MS) / 1000;
 
 let liveSocket = null;
 let liveAudioContext = null;
@@ -339,8 +346,19 @@ async function playWavBytes(bytes) {
   }
 }
 
+function floatTo16(input) {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, input[i]));
+    out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+  }
+  return out;
+}
+
 function downsampleTo16k(input, sourceRate) {
-  if (sourceRate === LIVE_SAMPLE_RATE) return input;
+  // Always emit Int16Array — the wire protocol is int16 PCM; passing the raw
+  // Float32Array through on a 16 kHz audio stack would be misparsed server-side.
+  if (sourceRate === LIVE_SAMPLE_RATE) return floatTo16(input);
   const ratio = sourceRate / LIVE_SAMPLE_RATE;
   const length = Math.floor(input.length / ratio);
   const out = new Int16Array(length);
@@ -363,7 +381,22 @@ function downsampleTo16k(input, sourceRate) {
   return out;
 }
 
+function teardownLiveCapture() {
+  if (liveProcessor) {
+    liveProcessor.onaudioprocess = null;
+    liveProcessor.disconnect();
+  }
+  if (liveSource) liveSource.disconnect();
+  if (liveStream) liveStream.getTracks().forEach((track) => track.stop());
+  if (liveAudioContext) liveAudioContext.close().catch(() => {});
+  liveProcessor = null;
+  liveSource = null;
+  liveStream = null;
+  liveAudioContext = null;
+}
+
 async function startLive() {
+  if (liveSocket) return; // socket still connecting or open — no double-start
   const button = $("#liveButton");
   const stateEl = $("#liveState");
   $("#liveLatency").textContent = "";
@@ -414,7 +447,10 @@ async function startLive() {
     }
   });
   liveSocket.addEventListener("close", () => {
-    stateEl.textContent = "idle";
+    // Preserve a server-sent error message; only overwrite a normal state.
+    if (!stateEl.textContent.startsWith("error:")) stateEl.textContent = "idle";
+    teardownLiveCapture();
+    liveSocket = null;
     button.classList.remove("is-recording");
     button.textContent = "Start conversation";
   });
@@ -423,13 +459,10 @@ async function startLive() {
     if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
     const channel = event.inputBuffer.getChannelData(0);
     const downsampled = downsampleTo16k(channel, liveAudioContext.sampleRate);
-    // Send in FRAME_SAMPLES-sized chunks for the VAD's preferred granularity.
-    let offset = 0;
-    while (offset + LIVE_FRAME_SAMPLES <= downsampled.length) {
-      const slice = downsampled.subarray(offset, offset + LIVE_FRAME_SAMPLES);
-      liveSocket.send(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
-      offset += LIVE_FRAME_SAMPLES;
-    }
+    if (downsampled.length === 0) return;
+    // Send the whole block — the server re-chunks to the VAD window, so no
+    // samples are dropped between callbacks.
+    liveSocket.send(downsampled.buffer.slice(downsampled.byteOffset, downsampled.byteOffset + downsampled.byteLength));
   };
 }
 
@@ -439,12 +472,7 @@ function stopLive() {
     liveSocket.close();
   }
   liveSocket = null;
-  if (liveProcessor) liveProcessor.disconnect();
-  if (liveSource) liveSource.disconnect();
-  if (liveStream) liveStream.getTracks().forEach((track) => track.stop());
-  liveProcessor = null;
-  liveSource = null;
-  liveStream = null;
+  teardownLiveCapture();
 }
 
 const liveButton = $("#liveButton");

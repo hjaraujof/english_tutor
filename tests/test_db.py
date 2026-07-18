@@ -99,6 +99,18 @@ def test_metric_trend_uncapped_and_ascending(db: Database):
     assert values == [float(index) for index in range(60)]
 
 
+def test_metric_trend_kind_filter(db: Database):
+    db.insert_session(kind="audio", transcript="a", review=_review(), metrics=_metrics(110.0))
+    db.insert_session(kind="text", transcript="t", review=_review(), metrics=_metrics(0.0))
+    db.insert_session(kind="audio", transcript="b", review=_review(), metrics=_metrics(120.0))
+
+    spoken_only = db.metric_trend("words_per_minute", kinds=("audio", "live"))
+    assert [point["value"] for point in spoken_only] == [110.0, 120.0]
+
+    unfiltered = db.metric_trend("words_per_minute")
+    assert len(unfiltered) == 3
+
+
 def test_recurring_error_threshold(db: Database):
     correction = {"type": "tense", "original": "go", "corrected": "went", "explanation": "past", "severity": "high"}
     for _ in range(3):

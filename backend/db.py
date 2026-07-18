@@ -138,13 +138,19 @@ class Database:
             ).fetchall()
         return [{"type": row["type"], "count": row["count"]} for row in rows]
 
-    def metric_trend(self, key: str) -> list[dict[str, Any]]:
+    def metric_trend(self, key: str, kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        query = (
+            "SELECT id, created_at, json_extract(metrics_json, '$.' || ?) AS value "
+            "FROM sessions WHERE value IS NOT NULL"
+        )
+        params: list[Any] = [key]
+        if kinds:
+            placeholders = ", ".join("?" for _ in kinds)
+            query += f" AND kind IN ({placeholders})"
+            params.extend(kinds)
+        query += " ORDER BY id ASC"
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT id, created_at, json_extract(metrics_json, '$.' || ?) AS value "
-                "FROM sessions WHERE value IS NOT NULL ORDER BY id ASC",
-                (key,),
-            ).fetchall()
+            rows = connection.execute(query, params).fetchall()
         return [
             {"id": row["id"], "created_at": row["created_at"], "value": row["value"]}
             for row in rows

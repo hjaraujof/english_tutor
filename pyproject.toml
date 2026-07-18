@@ -44,6 +44,9 @@ packages = ["backend"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+# Integration tests (live llama-server) run only when requested explicitly
+# (pytest -m integration); a later -m on the CLI overrides this default.
+addopts = "-m 'not integration'"
 markers = [
     "integration: requires running llama-server",
 ]

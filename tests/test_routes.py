@@ -60,3 +60,78 @@ def test_asr_failure_leaves_no_orphan_file(raising_client):
 
     sessions = raising_client.app.state.db.list_sessions()
     assert sessions == []
+
+
+def test_llm_failure_after_transcription_leaves_no_orphan(llm_down_client):
+    response = llm_down_client.post(
+        "/api/sessions",
+        files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 503
+    assert "llama-server" in response.json()["detail"]
+    assert list(_audio_dir(llm_down_client).iterdir()) == []
+    assert llm_down_client.app.state.db.list_sessions() == []
+
+
+def test_empty_transcription_skips_llm_and_persists(empty_asr_client):
+    response = empty_asr_client.post(
+        "/api/sessions",
+        files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert "No speech detected" in response.json()["review"]["overall"]["summary"]
+    sessions = empty_asr_client.app.state.db.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["kind"] == "audio"
+
+
+def test_upload_write_failure_returns_400_and_cleans_up(client, monkeypatch):
+    def raising_copy(source, destination):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("backend.routes.sessions.shutil.copyfileobj", raising_copy)
+    response = client.post(
+        "/api/sessions",
+        files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 400
+    assert list(_audio_dir(client).iterdir()) == []
+
+
+def test_blocking_asr_and_db_run_off_event_loop(client):
+    import asyncio
+
+    state = client.app.state
+    observed = {}
+    original_insert = state.db.insert_session
+
+    def probed_insert(**kwargs):
+        try:
+            asyncio.get_running_loop()
+            observed["db_on_loop"] = True
+        except RuntimeError:
+            observed["db_on_loop"] = False
+        return original_insert(**kwargs)
+
+    state.db.insert_session = probed_insert
+    response = client.post(
+        "/api/sessions",
+        files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert state.asr.saw_running_loop is False
+    assert observed["db_on_loop"] is False
+
+
+def test_wpm_trend_excludes_text_sessions(client):
+    client.post("/api/review", json={"text": "He go to school yesterday."})
+    client.post(
+        "/api/sessions",
+        files={"audio": ("clip.webm", b"fake-audio-bytes", "audio/webm")},
+    )
+
+    wpm = client.get("/api/sessions/trend/words_per_minute").json()["points"]
+    assert len(wpm) == 1
+
+    filler = client.get("/api/sessions/trend/filler_ratio").json()["points"]
+    assert len(filler) == 2

@@ -63,3 +63,21 @@ def test_empty_text():
     assert metrics.type_token_ratio == 0.0
     assert metrics.filler_ratio == 0.0
     assert metrics.words_per_minute == 0.0
+
+
+def test_fillers_not_counted_inside_longer_words():
+    metrics = compute_metrics(
+        text="I meant to say that you knowledge is impressive",
+        duration_seconds=10.0,
+        segments=None,
+    )
+    assert metrics.filler_count == 0
+
+
+def test_multiword_fillers_counted_on_token_boundaries():
+    metrics = compute_metrics(
+        text="you know I mean it is um fine you know",
+        duration_seconds=10.0,
+        segments=None,
+    )
+    assert metrics.filler_count == 4

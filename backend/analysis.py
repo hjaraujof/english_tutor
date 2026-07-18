@@ -4,7 +4,6 @@ No LLM, no network — used for objective per-session numbers and trends.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -47,13 +46,25 @@ def tokenize(text: str) -> list[str]:
     return [match.group(0).lower() for match in WORD_RE.finditer(text)]
 
 
-def _count_fillers(tokens: list[str], text: str) -> int:
+def _count_fillers(tokens: list[str]) -> int:
+    """Count filler words/phrases on token boundaries.
+
+    Multi-word phrases are matched against consecutive token windows, never as
+    raw substrings — "I meant" must not count as "i mean", nor "you knowledge"
+    as "you know".
+    """
     single = sum(1 for token in tokens if token in FILLER_TOKENS)
     multi = 0
-    lowered = text.lower()
     for phrase in FILLER_TOKENS:
-        if " " in phrase:
-            multi += lowered.count(phrase)
+        if " " not in phrase:
+            continue
+        phrase_tokens = phrase.split()
+        span = len(phrase_tokens)
+        multi += sum(
+            1
+            for index in range(len(tokens) - span + 1)
+            if tokens[index : index + span] == phrase_tokens
+        )
     return single + multi
 
 
@@ -93,8 +104,7 @@ def compute_metrics(
     tokens = tokenize(text)
     word_count = len(tokens)
     unique = len(set(tokens))
-    counts = Counter(tokens)
-    filler_count = _count_fillers(tokens, text)
+    filler_count = _count_fillers(tokens)
 
     words_per_minute = (word_count / duration_seconds * 60.0) if duration_seconds > 0 else 0.0
     type_token_ratio = (unique / word_count) if word_count else 0.0
@@ -107,7 +117,6 @@ def compute_metrics(
         longest_pause = 0.0
         mean_segment = 0.0
 
-    _ = counts  # kept for future per-token analytics
     return FluencyMetrics(
         word_count=word_count,
         unique_words=unique,

@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from backend.analysis import compute_metrics
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 ALLOWED_AUDIO_SUFFIXES = {".webm", ".wav", ".ogg", ".mp3", ".m4a"}
+
+# Metrics that only exist for spoken sessions; text reviews store 0 for these,
+# which would drag trend charts to zero on every paste review.
+TIME_BASED_METRICS = {"words_per_minute", "duration_seconds", "longest_pause_seconds", "mean_segment_words"}
 
 
 def _get_state(request: Request):
@@ -64,17 +69,19 @@ async def create_session(
     try:
         try:
             with temp_handle:
-                shutil.copyfileobj(audio.file, temp_handle)
+                await asyncio.to_thread(shutil.copyfileobj, audio.file, temp_handle)
         except OSError as exc:
             raise HTTPException(status_code=400, detail="could not store uploaded audio") from exc
         finally:
             await audio.close()
 
         transcription = await asyncio.to_thread(asr.transcribe, temp_path)
-    except HTTPException:
+    except HTTPException as exc:
+        logger.warning("upload rejected; removed partial audio %s: %s", temp_path, exc.detail)
         _unlink_quietly(temp_path)
         raise
     except Exception as exc:  # noqa: BLE001 - surface ASR failure to client
+        logger.warning("ASR failed; removed partial audio %s: %s", temp_path, exc)
         _unlink_quietly(temp_path)
         raise HTTPException(status_code=500, detail=f"ASR failed: {exc}") from exc
 
@@ -89,30 +96,45 @@ async def create_session(
         ],
     )
 
-    if not transcription.text.strip():
-        review_dump = {
-            "corrections": [],
-            "fluency_notes": [],
-            "vocabulary_suggestions": [],
-            "overall": {"summary": "No speech detected. Try recording a longer sample.", "strengths": [], "next_focus": []},
-        }
-    else:
-        review = await llm.review(
-            transcript=transcription.text,
-            native_language=config.user.native_language,
-            cefr_level=config.user.cefr_level,
-        )
-        review_dump = review.model_dump(by_alias=True)
+    # The stored audio file must only outlive this request together with its DB
+    # row; if review or persistence fails, remove it so data/audio/ never
+    # accumulates orphans.
+    try:
+        if not transcription.text.strip():
+            review_dump = {
+                "corrections": [],
+                "fluency_notes": [],
+                "vocabulary_suggestions": [],
+                "overall": {"summary": "No speech detected. Try recording a longer sample.", "strengths": [], "next_focus": []},
+            }
+        else:
+            review = await llm.review(
+                transcript=transcription.text,
+                native_language=config.user.native_language,
+                cefr_level=config.user.cefr_level,
+            )
+            review_dump = review.model_dump(by_alias=True)
 
-    session_id = await asyncio.to_thread(
-        lambda: db.insert_session(
-            kind="audio",
-            transcript=transcription.text,
-            review=review_dump,
-            metrics=metrics.to_dict(),
-            audio_path=audio_path,
+        session_id = await asyncio.to_thread(
+            lambda: db.insert_session(
+                kind="audio",
+                transcript=transcription.text,
+                review=review_dump,
+                metrics=metrics.to_dict(),
+                audio_path=audio_path,
+            )
         )
-    )
+    except httpx.HTTPError as exc:
+        logger.warning("LLM review failed; removed stored audio %s: %s", audio_path, exc)
+        _unlink_quietly(audio_path)
+        raise HTTPException(
+            status_code=503,
+            detail="LLM backend unavailable — is llama-server running?",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - no orphaned audio on any failure
+        logger.exception("session persistence failed; removed stored audio %s", audio_path)
+        _unlink_quietly(audio_path)
+        raise HTTPException(status_code=500, detail="could not complete review") from exc
 
     return {
         "id": session_id,
@@ -151,5 +173,6 @@ async def recurring_errors(state=Depends(_get_state), days: int = 30, min_count:
 
 @router.get("/trend/{metric_key}")
 async def metric_trend(metric_key: str, state=Depends(_get_state)):
-    points = await asyncio.to_thread(state.db.metric_trend, metric_key)
+    kinds = ("audio", "live") if metric_key in TIME_BASED_METRICS else None
+    points = await asyncio.to_thread(state.db.metric_trend, metric_key, kinds)
     return {"key": metric_key, "points": points}

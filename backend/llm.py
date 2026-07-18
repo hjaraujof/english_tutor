@@ -49,6 +49,11 @@ class Review(BaseModel):
     overall: OverallFeedback
 
 
+CORRECTION_TYPES = [
+    "grammar", "vocabulary", "spelling", "word_order", "tense",
+    "article", "preposition", "agreement", "punctuation",
+]
+
 REVIEW_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -57,7 +62,9 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string"},
+                    # Closed taxonomy keeps recurring-error aggregation from
+                    # fragmenting on free-form labels.
+                    "type": {"type": "string", "enum": CORRECTION_TYPES},
                     "original": {"type": "string"},
                     "corrected": {"type": "string"},
                     "explanation": {"type": "string"},
@@ -149,15 +156,20 @@ class LLMClient:
         response = await self._client.post(f"{self.base_url}/v1/chat/completions", json=payload)
         response.raise_for_status()
         body = response.json()
-        content = body["choices"][0]["message"]["content"]
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            logger.warning("unexpected completion shape; raw=%s", str(body)[:500])
+            content = None
         return self._parse_review(content)
 
-    def _parse_review(self, content: str) -> Review:
+    def _parse_review(self, content: str | None) -> Review:
         try:
             data = json.loads(content)
             return Review.model_validate(data)
-        except (json.JSONDecodeError, ValidationError) as exc:
-            logger.warning("review parse failed (%s); raw=%s", exc, content[:500])
+        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+            # TypeError covers servers that emit null content on a 200.
+            logger.warning("review parse failed (%s); raw=%s", exc, str(content)[:500])
             return Review(
                 overall=OverallFeedback(
                     summary="The model returned a response that could not be parsed. Please try again.",
@@ -191,6 +203,7 @@ class LLMClient:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                # `or [{}]` also covers present-but-empty choices (usage-only chunks).
+                delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
                 if delta:
                     yield delta
