@@ -4,24 +4,35 @@ version = "0.1.0"
 description = "Local English tutor (grammar review + speaking fluency) with faster-whisper + llama.cpp + Piper"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.136.3",
-    "uvicorn[standard]>=0.48.0",
-    "python-multipart>=0.0.29",
+    "fastapi>=0.139.2",
+    "uvicorn[standard]>=0.51.0",
+    "python-multipart>=0.0.32",
     "pydantic>=2.13.4",
     "httpx>=0.28.1",
     "faster-whisper>=1.2.1",
-    "numpy>=2.4.6",
+    "numpy>=2.5.1",
 ]
 
 [project.optional-dependencies]
 phase2 = [
     "silero-vad>=6.2.1",
-    "torch>=2.12.0",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
 ]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "httpx2>=2.7.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]
