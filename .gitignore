@@ -6,9 +6,11 @@ __pycache__/
 dist/
 build/
 
-# Local artifacts
-models/*.gguf
+# Local artifacts (GGUFs, Piper voices, HF cache metadata)
+models/
 vendor/llama.cpp/
+# Nix GC roots pinning llama-server's runtime closure (see start_llm.sh)
+.nix-gc-roots/
 data/audio/
 data/tutor.db
 data/tutor.db-*

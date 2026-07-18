@@ -18,7 +18,6 @@ class LLMConfig:
     model: str
     temperature: float
     max_tokens: int
-    draft_enabled: bool
 
 
 @dataclass(frozen=True)

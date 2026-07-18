@@ -8,6 +8,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# NixOS: the real libcuda lives under /run/opengl-driver/lib; without it the
+# nix-store CUDA stub is picked up and GPU init fails ("driver is a stub library").
+if [[ -d /run/opengl-driver/lib ]]; then
+  export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 LLAMA_BIN="${LLAMA_BIN:-$ROOT/vendor/llama.cpp/build/bin/llama-server}"
 MODEL="${MODEL:-$ROOT/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
 DRAFT_MODEL="${DRAFT_MODEL:-$ROOT/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf}"
@@ -34,7 +40,7 @@ ARGS=(
   --port "$PORT"
   -ngl 99
   -c "$CTX"
-  -fa
+  -fa on
   -ctk q8_0 -ctv q8_0
   --mlock
   -b 512 -ub 512

@@ -50,10 +50,24 @@ class Transcription:
         }
 
 
+def _load_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
+    """Prefer the local HF cache (no network — the app is local once set up);
+    fall back to a one-time download when the model isn't cached yet."""
+    try:
+        return WhisperModel(
+            model_size, device=device, compute_type=compute_type, local_files_only=True
+        )
+    except (RuntimeError, ValueError):
+        raise  # device/runtime failures must reach the CUDA→CPU fallback
+    except Exception:
+        logger.info("whisper model %s not in local cache; downloading once", model_size)
+        return WhisperModel(model_size, device=device, compute_type=compute_type)
+
+
 class ASR:
     def __init__(self, model_size: str, device: str, compute_type: str, beam_size: int) -> None:
         try:
-            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            self.model = _load_model(model_size, device, compute_type)
             self.device = device
             self.compute_type = compute_type
         except (RuntimeError, ValueError) as exc:
@@ -63,7 +77,7 @@ class ASR:
                     "Fix by aligning the ctranslate2 wheel with your NVIDIA driver.",
                     exc,
                 )
-                self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                self.model = _load_model(model_size, "cpu", "int8")
                 self.device = "cpu"
                 self.compute_type = "int8"
             else:

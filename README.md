@@ -29,7 +29,12 @@ mise use python@3.13 uv@latest
 sudo nix-channel --update    # for nix-shell to pick up cudatoolkit
 
 # 1. Clone + build llama.cpp with CUDA (sm_61). Roughly 10–20 minutes.
-mkdir -p vendor && git clone --depth 1 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
+#    Pinned: this commit is the one verified against start_llm.sh's flags; upstream
+#    later reworked the speculative-decoding CLI (-md/-ngld/--draft → --spec-type).
+mkdir -p vendor/llama.cpp && git -C vendor/llama.cpp init -q && \
+  git -C vendor/llama.cpp fetch --depth 1 https://github.com/ggerganov/llama.cpp \
+      b97ebdc98f6053604a19d861c08d8087601b96e0 && \
+  git -C vendor/llama.cpp checkout -q FETCH_HEAD
 nix-shell shell.nix --run "cd vendor/llama.cpp && \
   cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -DGGML_CUDA_FORCE_MMQ=ON \
                   -DCMAKE_CUDA_ARCHITECTURES=61 -DLLAMA_BUILD_SERVER=ON \
@@ -57,8 +62,9 @@ Two processes:
 # Terminal 1: LLM server
 ./start_llm.sh
 
-# Terminal 2: backend + frontend
-uv run uvicorn backend.main:app --host 127.0.0.1 --port 8765
+# Terminal 2: backend + frontend. Pass the extras — a plain `uv run` syncs the
+# default (no-extras) set and would uninstall the phase2 packages.
+uv run --extra phase2 uvicorn backend.main:app --host 127.0.0.1 --port 8765
 ```
 
 Then open <http://127.0.0.1:8765>.
@@ -86,8 +92,14 @@ frontend/
   app.js             MediaRecorder + WebSocket conversation
   app.css
 tests/
-  test_analysis.py       Unit (no LLM). Run with `uv run pytest`.
-  test_llm_prompts.py    Integration; auto-skipped without llama-server.
+  conftest.py            TestClient app fixture: FakeASR/FakeLLM + tmp SQLite
+  test_analysis.py       Fluency-metric unit tests (no LLM)
+  test_db.py             SQLite round-trip, FK cascade, trend queries
+  test_live.py           History trim + live-WS malformed-frame guards
+  test_llm_parse.py      Review-JSON fallback + correction-marker parsing
+  test_llm_prompts.py    Integration; runs only with `-m integration`
+  test_routes.py         Upload/review routes, orphan cleanup, trend filter
+  test_tts.py            Piper WAV contract (stub binary)
 data/                  Audio + tutor.db (gitignored)
 models/                GGUFs, Piper voices (gitignored)
 vendor/llama.cpp/      Local clone (gitignored)
@@ -99,7 +111,6 @@ vendor/llama.cpp/      Local clone (gitignored)
 |---|---|
 | `user.native_language`, `user.cefr_level` | Drives L1-interference targeting in the prompt. |
 | `llm.base_url` | Default `http://127.0.0.1:8080`. |
-| `llm.draft_enabled` | Toggle speculative decoding (start_llm.sh `DRAFT=1`). Benchmark first. |
 | `asr.model_size` | `tiny.en` for lower latency, `small.en` for accuracy. |
 | `asr.compute_type` | `int8_float16` on CUDA, `int8` on CPU fallback. |
 
@@ -115,8 +126,8 @@ curl -d '{"text":"He go to school yesterday."}' \
      http://127.0.0.1:8765/api/review
 
 # Tests:
-uv run pytest                          # unit only (no server)
-uv run pytest -m integration           # requires llama-server running
+uv run --extra dev pytest                        # unit only (no server)
+uv run --extra dev pytest -m integration         # requires llama-server running
 ```
 
 ## Tuning notes
@@ -125,8 +136,9 @@ uv run pytest -m integration           # requires llama-server running
 - **Need lower live-conversation latency?** Switch ASR to `tiny.en`, enable
   speculative decoding (`DRAFT=1` in `start_llm.sh`), or stream LLM tokens to
   Piper sentence-by-sentence.
-- **Pre-warm**: llama-server's `--slots` keeps a per-conversation KV cache, so
-  multi-turn live mode benefits a lot from reusing the same WS session.
+- **Pre-warm**: llama-server reuses each slot's prompt cache across turns, so
+  multi-turn live mode benefits a lot from reusing the same WS session
+  (`--slots` in start_llm.sh only exposes the monitoring endpoint).
 
 ## Out of scope (deliberately deferred)
 
