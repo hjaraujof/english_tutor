@@ -85,6 +85,20 @@ async def public_config():
     }
 
 
+class _RevalidatedStaticFiles(StaticFiles):
+    """Static assets must revalidate on every load (Cache-Control: no-cache).
+
+    Without it, browsers heuristically cache app.js/app.css and keep running
+    stale frontend code after a deploy; revalidation still returns 304s, so
+    repeat loads stay cheap.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if _FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+    app.mount("/", _RevalidatedStaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
