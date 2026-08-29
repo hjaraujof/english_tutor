@@ -36,7 +36,7 @@ pytest_skip_unless_server = pytest.mark.skipif(not _server_up(), reason="llama-s
 async def test_review_flags_subject_verb_agreement():
     client = LLMClient(
         base_url=BASE_URL,
-        model="Qwen2.5-3B-Instruct",
+        model="Qwen3-4B-Instruct-2507",
         prompts_dir=PROMPTS_DIR,
     )
     try:
@@ -59,7 +59,7 @@ async def test_review_flags_subject_verb_agreement():
 async def test_review_clean_input_yields_few_or_no_errors():
     client = LLMClient(
         base_url=BASE_URL,
-        model="Qwen2.5-3B-Instruct",
+        model="Qwen3-4B-Instruct-2507",
         prompts_dir=PROMPTS_DIR,
     )
     try:
@@ -68,9 +68,11 @@ async def test_review_clean_input_yields_few_or_no_errors():
             native_language="Spanish",
             cefr_level="B2",
         )
-        # A small quantized model may offer a stray style suggestion on clean
-        # input; the invariant is "not pathologically over-corrected", not zero.
-        assert len(review.corrections) <= 3
+        # Leaving correct English alone is the invariant that separates a usable
+        # tutor from a noisy one, so assert zero rather than a tolerance. Qwen
+        # 2.5 3B failed this on every clean sentence measured; Qwen 3 4B with
+        # the current prompt passed all of them.
+        assert review.corrections == []
         assert review.overall.summary
     finally:
         await client.aclose()

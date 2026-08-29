@@ -7,7 +7,7 @@ cefr_level = "B2"
 
 [llm]
 base_url = "http://127.0.0.1:8080"
-model = "Qwen2.5-3B-Instruct"
+model = "Qwen3-4B-Instruct-2507"
 temperature = 0.2
 max_tokens = 1024
 
