@@ -7,14 +7,20 @@ cefr_level = "B2"
 
 [llm]
 base_url = "http://127.0.0.1:8080"
-model = "Qwen2.5-3B-Instruct"
+model = "Qwen3-4B-Instruct-2507"
 temperature = 0.2
 max_tokens = 1024
 
 [asr]
-model_size = "small.en"
+# distil-small.en reproduces learner errors verbatim, which is what the grammar
+# reviewer needs; small.en normalized "peoples" to "People's" in measurement.
+# It is also smaller (275 vs 371 MiB) and faster (5.2x vs 4.5x realtime).
+model_size = "distil-small.en"
 device = "cuda"
-compute_type = "int8_float16"
+# Pascal (sm_61) has no efficient FP16. ctranslate2 reports only
+# {int8, int8_float32, float32} for cuda here, and rejects int8_float16 with a
+# ValueError that backend/asr.py converts into a silent CPU fallback.
+compute_type = "int8"
 beam_size = 1
 
 [tts]

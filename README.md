@@ -5,21 +5,29 @@ Local English tutor: grammar review (writing) + speaking-fluency feedback
 machine.
 
 Stack:
-- **LLM**: Qwen 2.5 3B Instruct (GGUF Q4_K_M) served by `llama-server` from
+- **LLM**: Qwen 3 4B Instruct 2507 (GGUF Q4_K_M) served by `llama-server` from
   llama.cpp built locally with CUDA for Pascal (sm_61).
-- **ASR**: `faster-whisper` (`small.en`, int8_float16, CUDA).
+- **ASR**: `faster-whisper` (`distil-small.en`, int8, CUDA).
 - **TTS** (Phase 2): Piper, CPU.
 - **Backend**: FastAPI + SQLite.
 - **Frontend**: vanilla HTML/JS (no build step).
 
 ## Hardware target
 
-Tuned for a single-GPU box with ~4 GB VRAM (e.g. GTX 1050). VRAM budget at
-8K context with KV cache q8_0:
-- Qwen 2.5 3B Q4_K_M weights: ~1.9 GB
-- KV cache: ~250 MB
-- Whisper small.en int8_float16: ~600 MB
-- CUDA context + headroom: ~400 MB
+Tuned for a single-GPU box with ~4 GB VRAM (e.g. GTX 1050, 4031 MiB usable).
+Measured with `nvidia-smi` at 4K context with KV cache q8_0:
+- `llama-server` with Qwen 3 4B Q4_K_M, weights + KV + CUDA context: 3051 MiB
+- `distil-small.en` int8: 278 MiB
+- Both loaded at once: 3329 MiB, leaving 702 MiB headroom
+
+Context is 4096, not 8192. Qwen 3 4B has 8 KV heads where Qwen 2.5 3B had 2, so
+its KV cache costs 4x per token. `CTX=8192` also fits (3635 MiB combined, 396 MiB
+headroom) if live-conversation history needs the room.
+
+`compute_type` must be `int8`, not `int8_float16`. Pascal (sm_61) has no
+efficient FP16, so ctranslate2 offers only `{int8, int8_float32, float32}` on
+CUDA and raises `ValueError` for anything else — which `backend/asr.py` turns
+into a silent CPU fallback that costs ~8x (0.6x realtime against 5.2x).
 
 ## One-time setup
 
@@ -41,9 +49,11 @@ nix-shell shell.nix --run "cd vendor/llama.cpp && \
                   -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF && \
   cmake --build build --config Release -j --target llama-server llama-bench"
 
-# 2. Download the model (~1.8 GB).
-uvx --from huggingface_hub hf download bartowski/Qwen2.5-3B-Instruct-GGUF \
-    Qwen2.5-3B-Instruct-Q4_K_M.gguf --local-dir models
+# 2. Download the model (~2.4 GB).
+uvx --from huggingface_hub hf download bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF \
+    Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf --local-dir models
+mv models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+   models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
 
 # 3. Python deps.
 uv sync --extra dev
@@ -62,9 +72,11 @@ Two processes:
 # Terminal 1: LLM server
 ./start_llm.sh
 
-# Terminal 2: backend + frontend. Pass the extras — a plain `uv run` syncs the
-# default (no-extras) set and would uninstall the phase2 packages.
-uv run --extra phase2 uvicorn backend.main:app --host 127.0.0.1 --port 8765
+# Terminal 2: backend + frontend. Use the script — it puts libcublas.so.12 on
+# LD_LIBRARY_PATH (without it faster-whisper silently drops to CPU) and it
+# activates .venv rather than `uv run`, which would re-sync the default extras
+# and uninstall the phase2 packages.
+./start_backend.sh
 ```
 
 Then open <http://127.0.0.1:8765>.
@@ -111,8 +123,8 @@ vendor/llama.cpp/      Local clone (gitignored)
 |---|---|
 | `user.native_language`, `user.cefr_level` | Drives L1-interference targeting in the prompt. |
 | `llm.base_url` | Default `http://127.0.0.1:8080`. |
-| `asr.model_size` | `tiny.en` for lower latency, `small.en` for accuracy. |
-| `asr.compute_type` | `int8_float16` on CUDA, `int8` on CPU fallback. |
+| `asr.model_size` | `distil-small.en`. `tiny.en` is 3x faster but transcribes learner errors less faithfully. |
+| `asr.compute_type` | `int8` on both CUDA and CPU. `int8_float16` is rejected on Pascal. |
 
 ## Verification
 
@@ -132,8 +144,12 @@ uv run --extra dev pytest -m integration         # requires llama-server running
 
 ## Tuning notes
 
-- **VRAM tight?** Drop the 3B to IQ4_XS (~1.7 GB) or shrink `-c` from 8192 to 4096.
-- **Need lower live-conversation latency?** Switch ASR to `tiny.en`, enable
+- **VRAM tight?** Drop the 4B to IQ4_XS (~2.2 GB) or shrink `-c` from 4096 to 2048.
+- **ASR suddenly slow?** It fell back to CPU. `distil-small.en` runs at 5.2x
+  realtime on CUDA and 0.6x on CPU. Check the backend log for the CUDA warning
+  from `backend/asr.py`, then confirm `libcublas.so.12` is on `LD_LIBRARY_PATH`.
+- **Need lower live-conversation latency?** Switch ASR to `tiny.en` (13.5x
+  realtime, 115 MiB, but less faithful to learner errors), enable
   speculative decoding (`DRAFT=1` in `start_llm.sh`), or stream LLM tokens to
   Piper sentence-by-sentence.
 - **Pre-warm**: llama-server reuses each slot's prompt cache across turns, so

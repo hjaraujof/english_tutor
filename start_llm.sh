@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch llama-server tuned for GTX 1050 (4 GB VRAM, sm_61) running Qwen 2.5 3B Q4_K_M.
+# Launch llama-server tuned for GTX 1050 (4 GB VRAM, sm_61) running Qwen 3 4B Q4_K_M.
 # Edit MODEL / DRAFT_MODEL paths if you swap quants. Toggle DRAFT=1 to enable
 # speculative decoding once you've confirmed acceptance rate is worth it.
 
@@ -15,11 +15,14 @@ if [[ -d /run/opengl-driver/lib ]]; then
 fi
 
 LLAMA_BIN="${LLAMA_BIN:-$ROOT/vendor/llama.cpp/build/bin/llama-server}"
-MODEL="${MODEL:-$ROOT/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
-DRAFT_MODEL="${DRAFT_MODEL:-$ROOT/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf}"
+MODEL="${MODEL:-$ROOT/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf}"
+DRAFT_MODEL="${DRAFT_MODEL:-$ROOT/models/Qwen3-0.6B-Q4_K_M.gguf}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
-CTX="${CTX:-8192}"
+# Qwen3-4B has 8 KV heads against Qwen2.5-3B's 2, so its KV cache costs 4x per
+# token. Measured on the GTX 1050: 3069 MiB at 4096 ctx, 3357 MiB at 8192 —
+# and 8192 leaves too little for faster-whisper to share the card.
+CTX="${CTX:-4096}"
 DRAFT="${DRAFT:-0}"
 
 if [[ ! -x "$LLAMA_BIN" ]]; then
@@ -30,7 +33,7 @@ fi
 
 if [[ ! -f "$MODEL" ]]; then
   echo "Model file not found: $MODEL" >&2
-  echo "Download with: huggingface-cli download bartowski/Qwen2.5-3B-Instruct-GGUF Qwen2.5-3B-Instruct-Q4_K_M.gguf --local-dir $ROOT/models" >&2
+  echo "Download with: huggingface-cli download bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf --local-dir $ROOT/models" >&2
   exit 1
 fi
 

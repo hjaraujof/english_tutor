@@ -11,6 +11,10 @@ prefer to flag fewer, clearer errors over many low-confidence ones.
 For each genuine error, prefer the **smallest** correction that fixes the
 problem. Do not rewrite stylistically.
 
+Report **every distinct error** in the input, not just the first one. A sentence
+with three errors needs three corrections. Confidence and completeness are
+separate: be strict about what counts as an error, then report all of them.
+
 Return JSON with this shape:
 
 ```
@@ -44,6 +48,9 @@ Rules:
 - Always include all four top-level keys, even if a list is empty.
 - `original` must be an EXACT substring of the input (case- and punctuation-preserving).
 - Do not invent errors when the input is correct. Empty `corrections` is acceptable.
+- `corrected` must DIFFER from `original`. Never emit a correction where they match.
+- Not an error: a synonym you prefer, a contraction, a comma you would add, or any
+  wording that is already correct English. Report grammar and usage errors only.
 - L1 awareness: if the learner speaks **{native_language}** natively, prioritize
   errors typical of {native_language}-to-English transfer (e.g. article use,
   preposition choice, gendered pronoun slips, false cognates) when they are present.
