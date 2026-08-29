@@ -34,11 +34,12 @@ into a silent CPU fallback that costs ~8x (0.6x realtime against 5.2x).
 ```bash
 # Tools
 mise use python@3.13 uv@latest
-sudo nix-channel --update    # for nix-shell to pick up cudatoolkit
+sudo nix-channel --update    # for nix-shell to pick up the CUDA components
 
 # 1. Clone + build llama.cpp with CUDA (sm_61). Roughly 10–20 minutes.
-#    Pinned: this commit is the one verified against start_llm.sh's flags; upstream
-#    later reworked the speculative-decoding CLI (-md/-ngld/--draft → --spec-type).
+#    The commit is pinned because it is the one verified against start_llm.sh's
+#    flags. shell.nix requests four CUDA components rather than the merged
+#    `cudatoolkit`; see the note under Tuning before you widen that list.
 mkdir -p vendor/llama.cpp && git -C vendor/llama.cpp init -q && \
   git -C vendor/llama.cpp fetch --depth 1 https://github.com/ggerganov/llama.cpp \
       b97ebdc98f6053604a19d861c08d8087601b96e0 && \
@@ -144,7 +145,21 @@ uv run --extra dev pytest -m integration         # requires llama-server running
 
 ## Tuning notes
 
+- **`nix-shell` fails with "No space left on device"?** Do not reach for
+  `cuda.cudatoolkit` to fix it — that is the cause. It is the merged runfile
+  package and pulls cuFFT, cuSOLVER, cuSPARSE and NPP, none of which ggml-cuda
+  references, and the merge derivation needs more scratch than this disk has.
+  `shell.nix` requests four components instead: `cuda_nvcc`, `cuda_cudart`,
+  `libcublas`, `cuda_cccl`. That set builds `ggml-cuda` cleanly and costs ~4.4 GB
+  against the 11 GB the merged build exhausted before failing.
 - **VRAM tight?** Drop the 4B to IQ4_XS (~2.2 GB) or shrink `-c` from 4096 to 2048.
+- **`nix-shell` fails with "No space left on device"?** Check free disk before
+  suspecting the channel. `shell.nix` asks for four CUDA components —
+  `cuda_nvcc`, `cuda_cudart`, `libcublas`, `cuda_cccl` — which is what
+  ggml-cuda actually references, and costs ~4.4 GB. The merged
+  `cudaPackages.cudatoolkit` also pulls cuFFT, cuSOLVER, cuSPARSE and NPP, and
+  its merge derivation needs more scratch than this disk can spare. Adding a
+  component is fine; switching back to `cudatoolkit` will fail here.
 - **ASR suddenly slow?** It fell back to CPU. `distil-small.en` runs at 5.2x
   realtime on CUDA and 0.6x on CPU. Check the backend log for the CUDA warning
   from `backend/asr.py`, then confirm `libcublas.so.12` is on `LD_LIBRARY_PATH`.

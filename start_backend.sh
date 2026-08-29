@@ -23,14 +23,21 @@ if [[ -d /run/opengl-driver/lib ]]; then
   export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# The cuda-merged GC root is committed under .nix-gc-roots, so this path is
-# stable across garbage collection without re-entering nix-shell.
-CUDA_LIB=$(echo "$ROOT"/.nix-gc-roots/*-cuda-merged-*/lib)
-if [[ -f "$CUDA_LIB/libcublas.so.12" ]]; then
-  export LD_LIBRARY_PATH="$CUDA_LIB:$LD_LIBRARY_PATH"
-else
-  echo "libcublas.so.12 not found under .nix-gc-roots/*-cuda-merged-*/lib" >&2
-  echo "ASR will fall back to CPU (~8x slower). Restore the GC root with:" >&2
+# shell.nix roots each CUDA component's `lib` output under .nix-gc-roots, so
+# these paths survive nix-collect-garbage without re-entering the shell. Match
+# CUDA roots by name rather than globbing every rooted lib dir: .nix-gc-roots
+# also holds glibc, and putting the nix glibc ahead of the system one kills the
+# interpreter outright with "undefined symbol: __nptl_change_stack_perm".
+found_cublas=0
+for lib_dir in "$ROOT"/.nix-gc-roots/*cuda*/lib "$ROOT"/.nix-gc-roots/*cublas*/lib; do
+  [[ -d "$lib_dir" ]] || continue
+  export LD_LIBRARY_PATH="$lib_dir:$LD_LIBRARY_PATH"
+  [[ -e "$lib_dir/libcublas.so.12" ]] && found_cublas=1
+done
+
+if [[ "$found_cublas" -eq 0 ]]; then
+  echo "libcublas.so.12 not found under .nix-gc-roots/*/lib" >&2
+  echo "ASR will fall back to CPU (~8x slower). Restore the roots with:" >&2
   echo "  nix-shell shell.nix --run true" >&2
 fi
 
