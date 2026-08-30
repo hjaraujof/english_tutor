@@ -37,8 +37,6 @@ router = APIRouter()
 SAMPLE_RATE = 16000
 FRAME_MS = 32
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
-SILENCE_END_MS = 600
-MAX_UTTERANCE_SECONDS = 30.0
 MAX_HISTORY_TURNS = 12
 # While no speech is detected, only this many frames are retained as onset
 # context (covers the VAD's speech-pad rewind); prevents unbounded growth and
@@ -138,7 +136,11 @@ async def live_socket(websocket: WebSocket):
         if vad_model is None:
             vad_model = await asyncio.to_thread(load_silero_vad)
             state.vad_model = vad_model
-        vad = VADIterator(vad_model, sampling_rate=SAMPLE_RATE, min_silence_duration_ms=SILENCE_END_MS)
+        vad = VADIterator(
+            vad_model,
+            sampling_rate=SAMPLE_RATE,
+            min_silence_duration_ms=config.live.silence_end_ms,
+        )
 
         prompt_path = Path(config.project_root) / "backend" / "prompts" / "conversation_partner.md"
         system_prompt = (await asyncio.to_thread(prompt_path.read_text, encoding="utf-8")).format(
@@ -236,7 +238,7 @@ async def live_socket(websocket: WebSocket):
                         }))
 
                 if in_speech and speech_start_time is not None:
-                    if time.perf_counter() - speech_start_time > MAX_UTTERANCE_SECONDS:
+                    if time.perf_counter() - speech_start_time > config.live.max_utterance_seconds:
                         audio_buffer = []
                         in_speech = False
                         speech_start_time = None
