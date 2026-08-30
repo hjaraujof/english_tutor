@@ -1,0 +1,49 @@
+# Scheduled dependency updates.
+#
+# Without this file the repo still received Dependabot SECURITY updates, because
+# vulnerability alerts are enabled at the repo level — but nothing routine. The
+# result was two security PRs that sat open for ten weeks while main moved past
+# them independently, so both had to be closed as obsolete rather than merged.
+#
+# Minor and patch bumps are grouped into one PR per ecosystem per week. One
+# trivial bump per PR is what let the previous pair go stale: each needed its own
+# review, so none got one. Major bumps stay ungrouped, because those are the ones
+# that deserve a separate read.
+
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+    groups:
+      actions:
+        patterns:
+          - "*"
