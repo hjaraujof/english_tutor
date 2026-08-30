@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        # The phase2 extras carry torch, which is a ~2 GB download and is only
+        # reachable through the live WebSocket route. That route's tests stub
+        # silero-vad, so the default + dev set covers everything CI can run.
+        run: uv sync --extra dev
+
+      - name: Run tests
+        # The llama-server integration tests deselect themselves without a
+        # reachable server, so no GPU or model download is needed here.
+        run: uv run --extra dev pytest tests/ -q

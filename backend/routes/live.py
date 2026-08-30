@@ -46,19 +46,45 @@ MAX_HISTORY_TURNS = 12
 PRE_ROLL_FRAMES = 10
 
 
-_CORRECTION_RE = re.compile(r"↪\s*\"([^\"]+)\"\s*→\s*\"([^\"]+)\"\s*\(([^)]+)\)")
+# The model does not reliably produce the documented `↪ "a" → "b" (reason)`
+# shape: it substitutes typographic quotes, opens with a bare arrow instead of
+# ↪, and sometimes omits the parenthetical. Accept those variants rather than
+# silently dropping the correction.
+_QUOTES = "\"'“”‘’"
+_QUOTE = f"[{_QUOTES}]"
+_ARROW = "(?:→|->|=>)"
+_MARKER = f"(?:↪|{_ARROW})"
+
+_CORRECTION_RE = re.compile(
+    rf"{_MARKER}\s*{_QUOTE}([^{_QUOTES}]+){_QUOTE}"
+    rf"\s*{_ARROW}\s*{_QUOTE}([^{_QUOTES}]+){_QUOTE}"
+    rf"\s*(?:\(([^)]*)\))?"
+)
+
+# Any run that opens like a correction marker, whether or not it parses into a
+# usable pair. The reply is spoken by the TTS, so a marker the parser could not
+# read must still be removed — otherwise the learner hears the arrow and the
+# parenthesis read out as words. `↪ none` is the explicit no-correction token,
+# which must be stripped too.
+_MARKER_SPAN_RE = re.compile(rf"{_MARKER}[ \t]*(?:{_QUOTE}|[Nn]one\b)[^\n]*")
 
 
 def _split_reply_and_correction(text: str) -> tuple[str, dict | None]:
+    correction = None
     match = _CORRECTION_RE.search(text)
-    if not match:
-        return text.strip(), None
-    reply = text[: match.start()].strip()
-    return reply, {
-        "original": match.group(1),
-        "corrected": match.group(2),
-        "reason": match.group(3).strip(),
-    }
+    if match:
+        original, corrected, reason = match.group(1), match.group(2), match.group(3)
+        # A correction whose halves are identical renders as a correction of
+        # nothing. The prompt forbids it; this guarantees it.
+        if original.strip() != corrected.strip():
+            correction = {
+                "original": original,
+                "corrected": corrected,
+                "reason": (reason or "").strip(),
+            }
+
+    reply = _MARKER_SPAN_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", reply).strip(), correction
 
 
 def _trim_history(history: list[dict[str, str]]) -> list[dict[str, str]]:

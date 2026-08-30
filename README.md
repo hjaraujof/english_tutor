@@ -164,9 +164,11 @@ uv run --extra dev pytest -m integration         # requires llama-server running
   realtime on CUDA and 0.6x on CPU. Check the backend log for the CUDA warning
   from `backend/asr.py`, then confirm `libcublas.so.12` is on `LD_LIBRARY_PATH`.
 - **Need lower live-conversation latency?** Switch ASR to `tiny.en` (13.5x
-  realtime, 115 MiB, but less faithful to learner errors), enable
-  speculative decoding (`DRAFT=1` in `start_llm.sh`), or stream LLM tokens to
-  Piper sentence-by-sentence.
+  realtime, 115 MiB, but less faithful to learner errors), or stream LLM tokens
+  to Piper sentence-by-sentence. Speculative decoding is not an option here: a
+  Qwen3-0.6B draft measured 18.04–18.17 tok/s at n-max 4/8/16 against an
+  18.20 tok/s baseline, and cost 374 MiB. Pascal has too little compute for the
+  parallel verify to pay for itself.
 - **Pre-warm**: llama-server reuses each slot's prompt cache across turns, so
   multi-turn live mode benefits a lot from reusing the same WS session
   (`--slots` in start_llm.sh only exposes the monitoring endpoint).
