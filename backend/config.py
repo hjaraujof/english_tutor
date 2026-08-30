@@ -34,6 +34,17 @@ class TTSConfig:
 
 
 @dataclass(frozen=True)
+class LiveConfig:
+    # How long the learner may pause mid-sentence before the turn is treated as
+    # finished. Learners hesitate to find words, so this is deliberately longer
+    # than a native-speech default. Measured against silero-vad: at 600 ms every
+    # pause of 600 ms or more split the sentence and only its first half reached
+    # the ASR. 1200 ms holds a 1-second pause.
+    silence_end_ms: int = 1200
+    max_utterance_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     host: str
     port: int
@@ -46,6 +57,7 @@ class Config:
     llm: LLMConfig
     asr: ASRConfig
     tts: TTSConfig
+    live: LiveConfig
     server: ServerConfig
     project_root: Path
 
@@ -66,6 +78,8 @@ def load_config(path: Path | None = None) -> Config:
         llm=LLMConfig(**raw["llm"]),
         asr=ASRConfig(**raw["asr"]),
         tts=TTSConfig(**raw["tts"]),
+        # `[live]` is optional: its defaults are the measured ones.
+        live=LiveConfig(**raw.get("live", {})),
         server=ServerConfig(host=server_raw["host"], port=server_raw["port"], data_dir=data_dir),
         project_root=project_root,
     )

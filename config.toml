@@ -26,6 +26,16 @@ beam_size = 1
 [tts]
 voice = "en_US-amy-medium"
 
+[live]
+# How long you may pause mid-sentence before the tutor decides your turn is
+# over. Measured against silero-vad with a two-clause sentence: at 600 ms every
+# pause of 600 ms or longer split the sentence, and only the first clause
+# reached the ASR. 1200 ms holds a 1-second pause; 2000 ms holds 1.5 seconds.
+# Raise it for a lower CEFR level — less fluent speakers pause longer to find
+# words. The cost is that the tutor waits this long before it answers.
+silence_end_ms = 1200
+max_utterance_seconds = 30.0
+
 [server]
 host = "127.0.0.1"
 port = 8765
