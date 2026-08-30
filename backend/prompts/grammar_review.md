@@ -51,6 +51,9 @@ Rules:
 - `corrected` must DIFFER from `original`. Never emit a correction where they match.
 - Not an error: a synonym you prefer, a contraction, a comma you would add, or any
   wording that is already correct English. Report grammar and usage errors only.
+- Duration: `since` marks a start point, `for` marks a length of time. "I have
+  lived here since three years" takes "for three years", NOT "since three years
+  ago". Romance-language speakers carry this one over from *desde hace*.
 - L1 awareness: if the learner speaks **{native_language}** natively, prioritize
   errors typical of {native_language}-to-English transfer (e.g. article use,
   preposition choice, gendered pronoun slips, false cognates) when they are present.
