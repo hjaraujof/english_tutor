@@ -129,6 +129,23 @@ class _Conversation:
         self.learner_speaking = False
         self.closing = False
         self.reply_task: asyncio.Task | None = None
+        # Turns queued behind the running one. A queued turn carries newer
+        # speech, so the running turn leaves the reply to it.
+        self.pending_turns = 0
+
+    def start_turn(self, utterance: np.ndarray | None, previous: asyncio.Task | None) -> asyncio.Task:
+        """Queue a turn behind `previous`. `utterance` is None when there is no
+        new speech to transcribe but a reply may still be owed."""
+        self.pending_turns += 1
+        return asyncio.create_task(self._take_turn(utterance, previous))
+
+    def _reply_is_owed(self) -> bool:
+        return (
+            self.history[-1]["role"] == "user"
+            and not self.learner_speaking
+            and not self.closing
+            and self.pending_turns == 0
+        )
 
     def interrupt_reply(self) -> None:
         if self.reply_task is not None:
@@ -150,31 +167,45 @@ class _Conversation:
         self.history.append({"role": role, "content": content})
         self.token_counts.append(tokens)
 
-    async def take_turn(self, utterance: np.ndarray, previous: asyncio.Task | None) -> None:
+    async def _take_turn(self, utterance: np.ndarray | None, previous: asyncio.Task | None) -> None:
         if previous is not None:
             await asyncio.wait([previous])
+        self.pending_turns -= 1
+        asr_ms = 0
+        if utterance is not None:
+            try:
+                asr_ms = await self._hear(utterance)
+            except Exception as exc:  # noqa: BLE001 — a failed turn must not end the session
+                await self._report_failure(exc)
+        # The user message may come from an earlier turn whose reply was
+        # skipped, so the check is on the history, not on this utterance.
+        if not self._reply_is_owed():
+            return
+        self.reply_task = asyncio.current_task()
         try:
-            asr_started = time.perf_counter()
-            transcription = await _transcribe_pcm(self.asr, utterance)
-            asr_ms = int((time.perf_counter() - asr_started) * 1000)
-            if not transcription.strip():
-                return
+            await self._reply(asr_ms)
+        except Exception as exc:  # noqa: BLE001 — a failed turn must not end the session
+            await self._report_failure(exc)
+        finally:
+            self.reply_task = None
+
+    async def _hear(self, utterance: np.ndarray) -> int:
+        """Transcribe one utterance into the history. Returns the ASR time in ms."""
+        asr_started = time.perf_counter()
+        transcription = await _transcribe_pcm(self.asr, utterance)
+        asr_ms = int((time.perf_counter() - asr_started) * 1000)
+        if transcription.strip():
             self.user_turns.append(transcription)
             self.total_speech_seconds += utterance.size / SAMPLE_RATE
             await self._append("user", transcription)
             await self._send({"type": "transcript", "text": transcription})
-            if self.learner_speaking or self.closing:
-                return
-            self.reply_task = asyncio.current_task()
-            try:
-                await self._reply(asr_ms)
-            finally:
-                self.reply_task = None
-        except Exception as exc:  # noqa: BLE001 — a failed turn must not end the session
-            logger.exception("live turn failed")
-            detail = LLM_DOWN_DETAIL if isinstance(exc, httpx.HTTPError) else str(exc)
-            with contextlib.suppress(Exception):
-                await self._send({"type": "error", "detail": detail})
+        return asr_ms
+
+    async def _report_failure(self, exc: Exception) -> None:
+        logger.error("live turn failed", exc_info=exc)
+        detail = LLM_DOWN_DETAIL if isinstance(exc, httpx.HTTPError) else str(exc)
+        with contextlib.suppress(Exception):
+            await self._send({"type": "error", "detail": detail})
 
     async def _reply(self, asr_ms: int) -> None:
         self.history, self.token_counts = _trim_history(self.history, self.token_counts, self.budget)
@@ -359,7 +390,7 @@ async def live_socket(websocket: WebSocket):
                         conversation.learner_speaking = False
                         if speech_start_time is None:
                             continue
-                        turn_task = asyncio.create_task(conversation.take_turn(utterance, turn_task))
+                        turn_task = conversation.start_turn(utterance, turn_task)
 
                 if in_speech and speech_start_time is not None:
                     if time.perf_counter() - speech_start_time > config.live.max_utterance_seconds:
@@ -375,6 +406,9 @@ async def live_socket(websocket: WebSocket):
                             "type": "error",
                             "detail": "Utterance too long; cut off.",
                         }))
+                        # The cut speech interrupted or held back a reply that
+                        # no later turn will now send.
+                        turn_task = conversation.start_turn(None, turn_task)
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # noqa: BLE001 — surface unexpected failures
