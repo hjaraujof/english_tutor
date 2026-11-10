@@ -1,8 +1,9 @@
 """faster-whisper ASR wrapper. Loaded once at app startup; transcribe() reuses it.
 
+The model files live in the project's own store and are downloaded there once.
 If CUDA initialization fails (e.g. driver/runtime mismatch on the bundled CT2
-wheels), automatically falls back to CPU with a logged warning so the rest of
-the app can still boot.
+wheels), the model loads on CPU with a logged warning so the rest of the app
+can still boot. A failed download is a different failure and is raised as one.
 """
 from __future__ import annotations
 
@@ -11,7 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, download_model
+from huggingface_hub.errors import LocalEntryNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -50,24 +52,41 @@ class Transcription:
         }
 
 
-def _load_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
-    """Prefer the local HF cache (no network — the app is local once set up);
-    fall back to a one-time download when the model isn't cached yet."""
+class ModelUnavailableError(Exception):
+    """The Whisper model files are not on disk and could not be downloaded."""
+
+
+def _resolve_model_path(model_size: str, model_dir: Path) -> str:
+    """Directory that holds the model files, downloaded into `model_dir` once.
+
+    `model_dir` is the project's own store. The shared Hugging Face cache is a
+    disk-cleanup target, and a model kept there is downloaded again after each
+    cleanup.
+    """
+    if Path(model_size).is_dir():
+        return model_size
     try:
-        return WhisperModel(
-            model_size, device=device, compute_type=compute_type, local_files_only=True
-        )
-    except (RuntimeError, ValueError):
-        raise  # device/runtime failures must reach the CUDA→CPU fallback
-    except Exception:
-        logger.info("whisper model %s not in local cache; downloading once", model_size)
-        return WhisperModel(model_size, device=device, compute_type=compute_type)
+        local_path = download_model(model_size, cache_dir=str(model_dir), local_files_only=True)
+        if (Path(local_path) / "model.bin").is_file():
+            return local_path
+    except LocalEntryNotFoundError:
+        pass
+    logger.info("whisper model %s not in %s; downloading once", model_size, model_dir)
+    try:
+        return download_model(model_size, cache_dir=str(model_dir))
+    except Exception as exc:
+        raise ModelUnavailableError(
+            f"could not download whisper model {model_size} into {model_dir}: {exc}"
+        ) from exc
 
 
 class ASR:
-    def __init__(self, model_size: str, device: str, compute_type: str, beam_size: int) -> None:
+    def __init__(
+        self, model_size: str, device: str, compute_type: str, beam_size: int, model_dir: Path
+    ) -> None:
+        model_path = _resolve_model_path(model_size, model_dir)
         try:
-            self.model = _load_model(model_size, device, compute_type)
+            self.model = WhisperModel(model_path, device=device, compute_type=compute_type)
             self.device = device
             self.compute_type = compute_type
         except (RuntimeError, ValueError) as exc:
@@ -77,7 +96,7 @@ class ASR:
                     "Fix by aligning the ctranslate2 wheel with your NVIDIA driver.",
                     exc,
                 )
-                self.model = _load_model(model_size, "cpu", "int8")
+                self.model = WhisperModel(model_path, device="cpu", compute_type="int8")
                 self.device = "cpu"
                 self.compute_type = "int8"
             else:

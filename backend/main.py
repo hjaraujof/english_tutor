@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
         device=config.asr.device,
         compute_type=config.asr.compute_type,
         beam_size=config.asr.beam_size,
+        model_dir=config.project_root / "models" / "whisper",
     )
     llm = LLMClient(
         base_url=config.llm.base_url,
