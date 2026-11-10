@@ -485,7 +485,6 @@ async function startLive() {
     try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.type === "transcript") {
       appendTurn("user", payload.text);
-      liveAssistantTurn = appendTurn("assistant", "");
     } else if (payload.type === "reply_delta") {
       if (!liveAssistantTurn) liveAssistantTurn = appendTurn("assistant", "");
       const textEl = liveAssistantTurn.querySelector(".text");

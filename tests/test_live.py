@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
+from backend.asr import Transcription
 from backend.llm import Correction, OverallFeedback, Review
+from backend.routes import live as live_routes
 from backend.routes.live import MESSAGE_OVERHEAD_TOKENS, _Conversation, _trim_history
 from tests.conftest import FakeLLM
 
@@ -170,6 +174,185 @@ def test_learner_speech_cancels_the_reply_in_progress(client, monkeypatch):
     sessions = client.app.state.db.list_sessions()
     assert len(sessions) == 1
     assert sessions[0]["transcript"] == "I goes to the store yesterday."
+
+
+def _scripted_vad(script: dict[int, dict], on_call: dict | None = None):
+    """A VADIterator stand-in that returns `script[n]` for frame n and runs
+    `on_call[n]` first, so a test can release a gated ASR at an exact frame."""
+    hooks = on_call or {}
+
+    class ScriptedVADIterator:
+        def __init__(self, model, sampling_rate, min_silence_duration_ms):
+            self.calls = 0
+
+        def __call__(self, frame):
+            self.calls += 1
+            if self.calls in hooks:
+                hooks[self.calls]()
+            return script.get(self.calls)
+
+        def reset_states(self):
+            pass
+
+    return ScriptedVADIterator
+
+
+class GatedASR:
+    """Returns the scripted texts in order. The first transcription blocks
+    until the gate opens, which holds turn A in its ASR phase."""
+
+    def __init__(self, texts: list[str], gate: threading.Event) -> None:
+        self.texts = list(texts)
+        self.gate = gate
+        self.calls = 0
+
+    def transcribe(self, audio_path) -> Transcription:
+        self.calls += 1
+        if self.calls == 1:
+            assert self.gate.wait(timeout=10)
+        text = self.texts[self.calls - 1]
+        return Transcription(language="en", duration=1.0, text=text, segments=[])
+
+
+class RecordingLLM(FakeLLM):
+    """Keeps the history that each reply was generated from."""
+
+    def __init__(self) -> None:
+        self.reply_histories: list[list[dict[str, str]]] = []
+
+    async def chat_stream(self, history, max_tokens: int = 256):
+        self.reply_histories.append([dict(message) for message in history])
+        yield "Ok."
+
+
+def _events_until(websocket, wanted: str) -> list[dict]:
+    events = []
+    while not events or events[-1]["type"] != wanted:
+        events.append(json.loads(websocket.receive_text()))
+    return events
+
+
+def _live_setup(client, monkeypatch, vad_class, asr, llm) -> bytes:
+    silero = pytest.importorskip("silero_vad")
+    monkeypatch.setattr(silero, "load_silero_vad", lambda: None)
+    monkeypatch.setattr(silero, "VADIterator", vad_class)
+    client.app.state.asr = asr
+    client.app.state.llm = llm
+    return np.zeros(512, dtype=np.int16).tobytes()
+
+
+def _end(websocket) -> None:
+    websocket.send_text('{"type": "end"}')
+    with pytest.raises(WebSocketDisconnect):
+        websocket.receive_text()
+
+
+def test_second_utterance_during_asr_gets_one_reply_to_both(client, monkeypatch):
+    # Utterance B starts AND ends while A is still being transcribed. A must
+    # not answer alone: one reply, generated from "A B".
+    gate = threading.Event()
+    vad = _scripted_vad(
+        {1: {"start": 0}, 2: {"end": 1}, 3: {"start": 2}, 4: {"end": 3}},
+        on_call={4: gate.set},
+    )
+    llm = RecordingLLM()
+    frame = _live_setup(
+        client, monkeypatch, vad, GatedASR(["I was thinking", "about the weekend"], gate), llm
+    )
+
+    with client.websocket_connect("/ws/live") as websocket:
+        for _ in range(4):
+            websocket.send_bytes(frame)
+        events = _events_until(websocket, "latency")
+        _end(websocket)
+
+    assert [event["type"] for event in events].count("reply_end") == 1
+    assert len(llm.reply_histories) == 1
+    assert llm.reply_histories[0][-1] == {
+        "role": "user", "content": "I was thinking about the weekend",
+    }
+
+
+def test_skipped_reply_is_sent_when_the_next_utterance_is_noise(client, monkeypatch):
+    # A's reply is skipped because B has started. B transcribes to nothing, so
+    # the reply to A is still owed.
+    gate = threading.Event()
+    vad = _scripted_vad(
+        {1: {"start": 0}, 2: {"end": 1}, 3: {"start": 2}, 4: {"end": 3}},
+        on_call={3: gate.set},
+    )
+    llm = RecordingLLM()
+    frame = _live_setup(
+        client, monkeypatch, vad, GatedASR(["I goes to the store yesterday.", ""], gate), llm
+    )
+
+    with client.websocket_connect("/ws/live") as websocket:
+        for _ in range(3):
+            websocket.send_bytes(frame)
+        _events_until(websocket, "transcript")
+        assert llm.reply_histories == []
+        websocket.send_bytes(frame)
+        events = _events_until(websocket, "latency")
+        _end(websocket)
+
+    assert "reply_delta" in [event["type"] for event in events]
+    assert len(llm.reply_histories) == 1
+    assert llm.reply_histories[0][-1]["content"] == "I goes to the store yesterday."
+
+
+def test_skipped_reply_is_sent_when_the_next_utterance_is_cut_off(client, monkeypatch):
+    gate = threading.Event()
+    vad = _scripted_vad({1: {"start": 0}, 2: {"end": 1}, 3: {"start": 2}}, on_call={3: gate.set})
+    llm = RecordingLLM()
+    frame = _live_setup(
+        client, monkeypatch, vad, GatedASR(["I goes to the store yesterday."], gate), llm
+    )
+    clock = {"now": 0.0}
+    monkeypatch.setattr(live_routes, "time", SimpleNamespace(perf_counter=lambda: clock["now"]))
+
+    with client.websocket_connect("/ws/live") as websocket:
+        for _ in range(3):
+            websocket.send_bytes(frame)
+        _events_until(websocket, "transcript")
+        clock["now"] = 1000.0  # far past max_utterance_seconds
+        websocket.send_bytes(frame)
+        events = _events_until(websocket, "latency")
+        _end(websocket)
+
+    details = [event.get("detail", "") for event in events if event["type"] == "error"]
+    assert any("too long" in detail for detail in details)
+    assert len(llm.reply_histories) == 1
+    assert llm.reply_histories[0][-1]["content"] == "I goes to the store yesterday."
+
+
+def test_interrupted_reply_stays_in_history_as_far_as_it_got(client, monkeypatch):
+    class StallOnceLLM(RecordingLLM):
+        async def chat_stream(self, history, max_tokens: int = 256):
+            self.reply_histories.append([dict(message) for message in history])
+            if len(self.reply_histories) == 1:
+                yield "Sounds "
+                await asyncio.sleep(60)
+            yield "Ok."
+
+    gate = threading.Event()
+    gate.set()
+    vad = _scripted_vad({1: {"start": 0}, 2: {"end": 1}, 3: {"start": 2}, 4: {"end": 3}})
+    llm = StallOnceLLM()
+    frame = _live_setup(client, monkeypatch, vad, GatedASR(["First.", "Second."], gate), llm)
+
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        _events_until(websocket, "reply_delta")
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        _events_until(websocket, "latency")
+        _end(websocket)
+
+    assert len(llm.reply_histories) == 2
+    assert [(m["role"], m["content"]) for m in llm.reply_histories[1][1:]] == [
+        ("user", "First."), ("assistant", "Sounds "), ("user", "Second."),
+    ]
 
 
 class CorrectingLLM(FakeLLM):
