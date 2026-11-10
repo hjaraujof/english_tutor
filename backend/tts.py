@@ -1,10 +1,10 @@
 """Piper TTS wrapper. Spawns piper as a subprocess and synthesizes WAV audio.
 
-Piper is launched via the `piper` binary (install with nix or pip). The voice
-model file (.onnx + .onnx.json) lives under models/piper/<voice>.onnx.
+The `piper` command comes from the piper-tts package in the phase2 extra. The
+voice model file (.onnx + .onnx.json) lives under models/piper/<voice>.onnx.
 
-This module is intentionally subprocess-based — Piper is a CPU-only C++ binary,
-so we avoid pulling in heavy Python wrappers and just feed it text on stdin.
+Piper runs as a subprocess with the text on stdin, so a cancelled reply can
+kill the synthesis outright.
 """
 from __future__ import annotations
 
