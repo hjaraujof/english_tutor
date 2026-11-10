@@ -35,4 +35,4 @@ Source: the status review of 2026-11-10. The owner approved all three groups, in
 - [x] Keep the Whisper model in `models/whisper` and raise a failed download as `ModelUnavailableError` (#29)
 - [x] Ignore `.claude/worktrees/` (#30)
 - [x] Delete the remote branches of #11 and #14
-- [ ] Measure the voice delay (`piper` alone and inside a live turn) on an idle machine. The run under load average 34.8 gave 12 s to 15 s per reply
+- [x] Measure the voice delay. The machine was not idle (load average 26.6 on 8 cores), so CPU time was measured beside wall time: one `piper` subprocess costs 6.5 s to 6.8 s of CPU per reply, the model load alone costs 3.8 s, and synthesis with the model in memory takes 0.8 s to 1.2 s of wall time for 3.6 s of audio. `backend/tts.py` pays the model load on each reply. No code change was asked for
