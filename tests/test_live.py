@@ -1,36 +1,76 @@
-"""Live-socket tests: history-trim boundary, malformed-frame guards, and
-server-side re-chunking. The WS test uses the real silero VAD (phase2 extra)
-over the TestClient WebSocket; no LLM turn is triggered because the frames
-contain no speech."""
+"""Live-socket tests: token-budget history trim, malformed-frame guards,
+server-side re-chunking, reply interruption and the end-of-session review. The
+malformed-frame test uses the real silero VAD (phase2 extra) over the
+TestClient WebSocket; no LLM turn is triggered because the frames contain no
+speech."""
 from __future__ import annotations
 
+import asyncio
+import json
+
+import httpx
 import numpy as np
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from backend.routes.live import MAX_HISTORY_TURNS, _trim_history
+from backend.llm import Correction, OverallFeedback, Review
+from backend.routes.live import MESSAGE_OVERHEAD_TOKENS, _Conversation, _trim_history
+from tests.conftest import FakeLLM
 
 
 def _fake_history(pairs: int) -> list[dict[str, str]]:
+    """System message, `pairs` complete turns, then the newest user message."""
     history = [{"role": "system", "content": "sys"}]
     for index in range(pairs):
         history.append({"role": "user", "content": f"u{index}"})
         history.append({"role": "assistant", "content": f"a{index}"})
+    history.append({"role": "user", "content": "newest"})
     return history
 
 
-def test_trim_history_noop_at_cap():
-    history = _fake_history(MAX_HISTORY_TURNS)
-    assert _trim_history(history) is history
+def _cost(message_count: int, tokens_each: int) -> int:
+    return message_count * (tokens_each + MESSAGE_OVERHEAD_TOKENS)
 
 
-def test_trim_history_preserves_system_message_and_complete_pairs():
-    history = _fake_history(MAX_HISTORY_TURNS + 1)
-    trimmed = _trim_history(history)
-    assert len(trimmed) == 1 + 2 * MAX_HISTORY_TURNS
-    assert trimmed[0]["role"] == "system"
-    assert trimmed[1]["role"] == "user"
-    assert trimmed[-1]["role"] == "assistant"
+def test_trim_history_keeps_everything_that_fits():
+    history = _fake_history(3)
+    counts = [100] * len(history)
+    trimmed, trimmed_counts = _trim_history(history, counts, _cost(len(history), 100))
+    assert trimmed == history
+    assert trimmed_counts == counts
+
+
+def test_trim_history_drops_oldest_turns_by_tokens_not_by_count():
+    # Three turns of 250-token replies: a count of turns calls this short, the
+    # token budget does not.
+    history = _fake_history(3)
+    counts = [100] + [20, 250] * 3 + [20]
+    budget = 100 + 20 + 250 + 20 + _cost(4, 0)  # system + one turn + newest
+    trimmed, trimmed_counts = _trim_history(history, counts, budget)
+    assert [message["content"] for message in trimmed] == ["sys", "u2", "a2", "newest"]
+    assert trimmed_counts == [100, 20, 250, 20]
+
+
+def test_trim_history_never_drops_system_or_newest_message():
+    history = _fake_history(2)
+    counts = [5000] + [10] * 4 + [5000]
+    trimmed, _ = _trim_history(history, counts, 100)
+    assert [message["content"] for message in trimmed] == ["sys", "newest"]
+
+
+def test_user_message_after_user_message_joins_it():
+    conversation = _Conversation(
+        websocket=None, asr=None, llm=FakeLLM(), tts=None,
+        system_prompt="sys", system_tokens=1, budget=1000,
+    )
+
+    async def two_user_messages():
+        await conversation._append("user", "I was thinking")
+        await conversation._append("user", "about the weekend")
+
+    asyncio.run(two_user_messages())
+    assert conversation.history[1:] == [{"role": "user", "content": "I was thinking about the weekend"}]
+    assert conversation.token_counts == [1, 6]
 
 
 def test_live_socket_survives_malformed_frames(client):
@@ -65,7 +105,6 @@ class FakeVADIterator:
 
 def test_live_turn_streams_and_persists_session(client, monkeypatch):
     silero = pytest.importorskip("silero_vad")
-    import json
 
     monkeypatch.setattr(silero, "load_silero_vad", lambda: None)
     monkeypatch.setattr(silero, "VADIterator", FakeVADIterator)
@@ -74,11 +113,11 @@ def test_live_turn_streams_and_persists_session(client, monkeypatch):
     with client.websocket_connect("/ws/live") as websocket:
         websocket.send_bytes(frame)
         websocket.send_bytes(frame)
-        events = [json.loads(websocket.receive_text()) for _ in range(5)]
+        events = [json.loads(websocket.receive_text()) for _ in range(6)]
         assert [event["type"] for event in events] == [
-            "transcript", "reply_delta", "reply_delta", "reply_end", "latency",
+            "speech_start", "transcript", "reply_delta", "reply_delta", "reply_end", "latency",
         ]
-        assert events[0]["text"] == "I goes to the store yesterday."
+        assert events[1]["text"] == "I goes to the store yesterday."
         websocket.send_text('{"type": "end"}')
         with pytest.raises(WebSocketDisconnect):
             websocket.receive_text()
@@ -90,9 +129,130 @@ def test_live_turn_streams_and_persists_session(client, monkeypatch):
     assert sessions[0]["metrics"]["word_count"] == 6
 
 
+class InterruptingVADIterator(FakeVADIterator):
+    """One full utterance, then the learner starts to speak again on frame 3."""
+
+    def __call__(self, frame):
+        self.calls += 1
+        return {1: {"start": 0}, 2: {"end": 1024}, 3: {"start": 2048}}.get(self.calls)
+
+
+class StallingLLM(FakeLLM):
+    """Streams one token and then hangs, like a long reply in progress."""
+
+    async def chat_stream(self, history, max_tokens: int = 256):
+        yield "Sounds "
+        await asyncio.sleep(60)
+
+
+def test_learner_speech_cancels_the_reply_in_progress(client, monkeypatch):
+    silero = pytest.importorskip("silero_vad")
+    monkeypatch.setattr(silero, "load_silero_vad", lambda: None)
+    monkeypatch.setattr(silero, "VADIterator", InterruptingVADIterator)
+    client.app.state.llm = StallingLLM()
+
+    frame = np.zeros(512, dtype=np.int16).tobytes()
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        opening = [json.loads(websocket.receive_text())["type"] for _ in range(3)]
+        assert opening == ["speech_start", "transcript", "reply_delta"]
+
+        # The reply is now stalled for 60 s. Only a cancel lets reply_end arrive.
+        websocket.send_bytes(frame)
+        after = {json.loads(websocket.receive_text())["type"] for _ in range(2)}
+        assert after == {"speech_start", "reply_end"}
+
+        websocket.send_text('{"type": "end"}')
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
+
+    sessions = client.app.state.db.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["transcript"] == "I goes to the store yesterday."
+
+
+class CorrectingLLM(FakeLLM):
+    """Speaks one correction during the turn and types one in the final review."""
+
+    async def chat_stream(self, history, max_tokens: int = 256):
+        yield 'Nice. ↪ "I goes" → "I went" (past tense)'
+
+    async def review(self, transcript: str, native_language: str, cefr_level: str) -> Review:
+        return Review(
+            corrections=[
+                Correction(type="tense", original="I goes", corrected="I went", explanation="Past simple."),
+            ],
+            overall=OverallFeedback(summary=f"Reviewed: {transcript}"),
+        )
+
+
+def _run_one_turn(client, monkeypatch, llm) -> dict:
+    silero = pytest.importorskip("silero_vad")
+    monkeypatch.setattr(silero, "load_silero_vad", lambda: None)
+    monkeypatch.setattr(silero, "VADIterator", FakeVADIterator)
+    client.app.state.llm = llm
+
+    frame = np.zeros(512, dtype=np.int16).tobytes()
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        while json.loads(websocket.receive_text())["type"] != "latency":
+            pass
+        websocket.send_text('{"type": "end"}')
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
+
+    sessions = client.app.state.db.list_sessions()
+    assert len(sessions) == 1
+    return sessions[0]
+
+
+def test_live_session_is_stored_with_a_typed_grammar_review(client, monkeypatch):
+    session = _run_one_turn(client, monkeypatch, CorrectingLLM())
+
+    review = session["review"]
+    assert review["overall"]["summary"] == "Reviewed: I goes to the store yesterday."
+    assert [item["type"] for item in review["corrections"]] == ["tense"]
+    assert review["live_corrections"] == [
+        {"original": "I goes", "corrected": "I went", "reason": "past tense"},
+    ]
+
+    recurring = client.app.state.db.recurring_error_types(min_count=1)
+    assert recurring == [{"type": "tense", "count": 1}]
+
+
+class ReviewDownLLM(CorrectingLLM):
+    async def review(self, transcript: str, native_language: str, cefr_level: str) -> Review:
+        raise httpx.ConnectError("connection refused")
+
+
+def test_live_session_is_stored_when_the_final_review_fails(client, monkeypatch):
+    session = _run_one_turn(client, monkeypatch, ReviewDownLLM())
+
+    review = session["review"]
+    assert "did not run" in review["overall"]["summary"]
+    assert review["corrections"] == []
+    assert len(review["live_corrections"]) == 1
+    assert client.app.state.db.recurring_error_types(min_count=1) == []
+
+
+def test_live_socket_reports_an_unreachable_llm_at_the_start(client):
+    pytest.importorskip("silero_vad")
+
+    class UnreachableLLM(FakeLLM):
+        async def context_size(self) -> int:
+            raise httpx.ConnectError("connection refused")
+
+    client.app.state.llm = UnreachableLLM()
+    with client.websocket_connect("/ws/live") as websocket:
+        payload = json.loads(websocket.receive_text())
+        assert payload["type"] == "error"
+        assert "llama-server" in payload["detail"]
+
+
 def test_second_concurrent_live_connection_is_rejected(client):
     pytest.importorskip("silero_vad")
-    import json
 
     with client.websocket_connect("/ws/live") as first:
         with client.websocket_connect("/ws/live") as second:

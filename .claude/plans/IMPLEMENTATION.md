@@ -22,7 +22,7 @@ Source: the status review of 2026-11-10. The owner approved all three groups, in
 ## Group 3: code items, each with a test
 
 - [x] `/api/review` returns 503 when `llama-server` is down
-- [ ] Live route: the learner can interrupt the tutor
-- [ ] Live route: trim history by tokens, not by turns
-- [ ] Live route: corrections carry a type from the closed list, and the session gets a grammar review
+- [x] Live route: the learner can interrupt the tutor (server test passes; no run with a real microphone and speakers)
+- [x] Live route: trim history by tokens, not by turns (`/props` and `/tokenize` read from the pinned llama.cpp source, not called on a live server)
+- [x] Live route: the session gets a grammar review with typed corrections; spoken corrections stay under `live_corrections`
 - [x] `frontend/app.js`: the offline hint names `./start_backend.sh`
