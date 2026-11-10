@@ -88,7 +88,7 @@ backend/
   main.py            FastAPI composition (lifespan loads ASR + LLM + DB once)
   asr.py             faster-whisper wrapper
   llm.py             OpenAI-compat client → llama-server, JSON-schema parsing
-  tts.py             Piper subprocess wrapper (Phase 2)
+  tts.py             Piper voice, loaded once at startup (Phase 2)
   analysis.py        Pure-Python fluency metrics: WPM, TTR, filler ratio, pauses
   db.py              SQLite: sessions, errors, metric trends
   config.py          Loads config.toml at startup
@@ -111,7 +111,7 @@ tests/
   test_llm_parse.py      Review-JSON fallback + correction-marker parsing
   test_llm_prompts.py    Integration; runs only with `-m integration`
   test_routes.py         Upload/review routes, orphan cleanup, trend filter
-  test_tts.py            Piper WAV contract (stub binary)
+  test_tts.py            Piper WAV contract, load-once, cancel; real voice when installed
 data/                  Audio + tutor.db (gitignored)
 models/                GGUFs, Piper voices, Whisper model (gitignored)
 vendor/llama.cpp/      Local clone (gitignored)
