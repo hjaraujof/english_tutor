@@ -14,10 +14,11 @@ Source: the status review of 2026-11-10. The owner approved all three groups, in
 ## Group 2: local runtime
 
 - [skip] Run skill-disk-cleanup on `/dev/sda5`: the dry run showed that each target and `/nix/store` are on `/dev/nvme0n1p3` (11 GB free), so a clean frees nothing on `/dev/sda5` and the roots restore does not need it
-- [ ] Restore `.nix-gc-roots/` with `nix-shell shell.nix --run true`
+- [x] Restore `.nix-gc-roots/` with `nix-shell shell.nix --run true` (four CUDA roots, `libcublas.so.12` present)
+- [x] Build `llama-server` again (its glibc and libstdc++ were garbage-collected) and add `build_llama.sh`, which roots what the binary loads
 - [x] Move the tutor default port from 8765 (held by `agento11y`) to 8766, and make `start_backend.sh` read it from `config.toml`
 - [x] Put `piper` on `PATH` for `start_backend.sh`: `piper-tts` joins the `phase2` extra
-- [ ] Start `llama-server` and the backend, and run both smoke requests from the README
+- [x] Start `llama-server` and the backend, and run both smoke requests from the README (text 200, audio 200, one live conversation with an interrupt)
 
 ## Group 3: code items, each with a test
 

@@ -29,7 +29,7 @@ CTX="${CTX:-4096}"
 
 if [[ ! -x "$LLAMA_BIN" ]]; then
   echo "llama-server binary not found at $LLAMA_BIN" >&2
-  echo "Build it with: nix-shell --run 'cd vendor/llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -DGGML_CUDA_FORCE_MMQ=ON -DCMAKE_CUDA_ARCHITECTURES=61 && cmake --build build --config Release -j'" >&2
+  echo "Build it with: ./build_llama.sh" >&2
   exit 1
 fi
 
