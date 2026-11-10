@@ -113,7 +113,7 @@ tests/
   test_routes.py         Upload/review routes, orphan cleanup, trend filter
   test_tts.py            Piper WAV contract (stub binary)
 data/                  Audio + tutor.db (gitignored)
-models/                GGUFs, Piper voices (gitignored)
+models/                GGUFs, Piper voices, Whisper model (gitignored)
 vendor/llama.cpp/      Local clone (gitignored)
 ```
 
@@ -164,6 +164,9 @@ uv run --extra dev pytest -m integration         # requires llama-server running
   `cudaPackages.cudatoolkit` also pulls cuFFT, cuSOLVER, cuSPARSE and NPP, and
   its merge derivation needs more scratch than this disk can spare. Adding a
   component is fine; switching back to `cudatoolkit` will fail here.
+- **Where is the Whisper model?** Under `models/whisper/`. The backend downloads
+  it there on its first start (321 MB) and needs no network after that. It is
+  not in `~/.cache/huggingface`, because cache cleanups empty that folder.
 - **ASR suddenly slow?** It fell back to CPU. `distil-small.en` runs at 5.2x
   realtime on CUDA and 0.6x on CPU. Check the backend log for the CUDA warning
   from `backend/asr.py`, then confirm `libcublas.so.12` is on `LD_LIBRARY_PATH`.
