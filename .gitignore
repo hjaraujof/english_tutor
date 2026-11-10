@@ -15,6 +15,9 @@ data/audio/
 data/tutor.db
 data/tutor.db-*
 
+# Feature worktrees, one per branch
+.claude/worktrees/
+
 # Editor
 .vscode/
 .idea/
