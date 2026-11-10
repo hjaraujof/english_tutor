@@ -3,6 +3,7 @@ serves the static frontend and the /api routes.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -44,8 +45,11 @@ async def lifespan(app: FastAPI):
 
     voice_model = config.project_root / "models" / "piper" / f"{config.tts.voice}.onnx"
     tts = TTS(voice_model=voice_model)
-    if not tts.is_available():
-        logger.info("TTS unavailable (voice model or piper binary missing); live mode will skip audio replies")
+    if tts.is_available():
+        logger.info("loading Piper voice %s", config.tts.voice)
+        await asyncio.to_thread(tts.load_voice)
+    else:
+        logger.info("TTS unavailable (voice model or piper-tts package missing); live mode will skip audio replies")
 
     app.state.config = config
     app.state.asr = asr
