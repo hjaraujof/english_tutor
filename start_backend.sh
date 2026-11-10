@@ -16,9 +16,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8765}"
-
 if [[ -d /run/opengl-driver/lib ]]; then
   export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
@@ -49,5 +46,12 @@ fi
 # Activate rather than `uv run`: a plain `uv run` re-syncs the default extras
 # and uninstalls the phase2 packages the live-conversation path needs.
 source "$ROOT/.venv/bin/activate"
+
+# config.toml names the address. HOST and PORT override it for one run.
+read -r config_host config_port < <(
+  python3 -c 'from backend.config import load_config; server = load_config().server; print(server.host, server.port)'
+)
+HOST="${HOST:-$config_host}"
+PORT="${PORT:-$config_port}"
 
 exec uvicorn backend.main:app --host "$HOST" --port "$PORT"

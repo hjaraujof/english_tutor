@@ -73,6 +73,13 @@ def test_llm_failure_after_transcription_leaves_no_orphan(llm_down_client):
     assert llm_down_client.app.state.db.list_sessions() == []
 
 
+def test_text_review_returns_503_when_llm_is_down(llm_down_client):
+    response = llm_down_client.post("/api/review", json={"text": "He go to school yesterday."})
+    assert response.status_code == 503
+    assert "llama-server" in response.json()["detail"]
+    assert llm_down_client.app.state.db.list_sessions() == []
+
+
 def test_empty_transcription_skips_llm_and_persists(empty_asr_client):
     response = empty_asr_client.post(
         "/api/sessions",
