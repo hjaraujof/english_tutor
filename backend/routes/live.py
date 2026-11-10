@@ -418,12 +418,17 @@ async def live_socket(websocket: WebSocket):
         except Exception:
             pass
     finally:
-        state.live_active = False
-        if conversation is not None:
-            conversation.closing = True
-            conversation.interrupt_reply()
-            if turn_task is not None:
-                await asyncio.wait([turn_task])
+        try:
+            if conversation is not None:
+                conversation.closing = True
+                conversation.interrupt_reply()
+                if turn_task is not None:
+                    await asyncio.wait([turn_task])
+        finally:
+            # Released after the last turn, which still uses the shared ASR
+            # model, and before the session review, which can take many
+            # seconds and must not refuse a learner who restarts.
+            state.live_active = False
         if conversation is not None and conversation.user_turns:
             transcript_text = " ".join(conversation.user_turns)
             metrics = compute_metrics(

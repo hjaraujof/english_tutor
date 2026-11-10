@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -353,6 +354,73 @@ def test_interrupted_reply_stays_in_history_as_far_as_it_got(client, monkeypatch
     assert [(m["role"], m["content"]) for m in llm.reply_histories[1][1:]] == [
         ("user", "First."), ("assistant", "Sounds "), ("user", "Second."),
     ]
+
+
+def _wait_for(condition, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return condition()
+
+
+def test_live_slot_stays_taken_until_the_last_turn_finishes(client, monkeypatch):
+    # The closing session's last turn still runs on the shared ASR model, so a
+    # new session must not start beside it.
+    gate = threading.Event()
+    vad = _scripted_vad({1: {"start": 0}, 2: {"end": 1}})
+    frame = _live_setup(client, monkeypatch, vad, GatedASR(["Last words."], gate), RecordingLLM())
+    state = client.app.state
+
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        _events_until(websocket, "speech_start")
+        websocket.send_text('{"type": "end"}')
+
+        released_early = _wait_for(lambda: not state.live_active, 0.5)
+        assert not released_early
+
+        gate.set()
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                websocket.receive_text()
+
+    assert state.live_active is False
+    assert state.db.list_sessions()[0]["transcript"] == "Last words."
+
+
+def test_live_slot_is_free_while_the_session_review_runs(client, monkeypatch):
+    # The end-of-session review can take many seconds. A learner who restarts
+    # the conversation in that time must not be refused.
+    review_gate = threading.Event()
+
+    class SlowReviewLLM(RecordingLLM):
+        async def review(self, transcript: str, native_language: str, cefr_level: str) -> Review:
+            await asyncio.to_thread(review_gate.wait, 10)
+            return Review(overall=OverallFeedback(summary="Reviewed."))
+
+    asr_gate = threading.Event()
+    asr_gate.set()
+    vad = _scripted_vad({1: {"start": 0}, 2: {"end": 1}})
+    frame = _live_setup(client, monkeypatch, vad, GatedASR(["Hello there."], asr_gate), SlowReviewLLM())
+    state = client.app.state
+
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        _events_until(websocket, "latency")
+        websocket.send_text('{"type": "end"}')
+
+        assert _wait_for(lambda: not state.live_active, 5)
+        assert state.db.list_sessions() == []  # the review has not returned yet
+
+        review_gate.set()
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
+
+    assert state.db.list_sessions()[0]["review"]["overall"]["summary"] == "Reviewed."
 
 
 class CorrectingLLM(FakeLLM):

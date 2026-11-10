@@ -28,4 +28,11 @@ Source: the status review of 2026-11-10. The owner approved all three groups, in
 - [x] Live route: the session gets a grammar review with typed corrections; spoken corrections stay under `live_corrections`
 - [x] `frontend/app.js`: the offline hint names `./start_backend.sh`
 - [x] Adversarial review of #24, findings F1, F2 and F4: a reply waits for queued speech, a skipped reply is sent when the next utterance is noise or is cut off, and four tests cover those paths
-- [skip] Adversarial review of #24, finding F3 (`live_active` cleared before the session review): the validator did not confirm harm, and the fix it names would refuse a restart during the review
+- [x] Adversarial review of #24, finding F3: `live_active` stays set until the closing session's last turn finishes, and is released before the session review so a restart is not refused
+
+## Group 4: follow-up after the smoke run
+
+- [x] Keep the Whisper model in `models/whisper` and raise a failed download as `ModelUnavailableError` (#29)
+- [x] Ignore `.claude/worktrees/` (#30)
+- [x] Delete the remote branches of #11 and #14
+- [x] Measure the voice delay. The machine was not idle (load average 26.6 on 8 cores), so CPU time was measured beside wall time: one `piper` subprocess costs 6.5 s to 6.8 s of CPU per reply, the model load alone costs 3.8 s, and synthesis with the model in memory takes 0.8 s to 1.2 s of wall time for 3.6 s of audio. `backend/tts.py` pays the model load on each reply. No code change was asked for
