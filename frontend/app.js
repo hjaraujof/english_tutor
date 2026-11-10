@@ -27,7 +27,7 @@ async function bootstrap() {
     const config = await response.json();
     setStatus(`L1: ${config.native_language} · ${config.cefr_level} · ${config.model}`);
   } catch (err) {
-    setStatus("offline — start backend with `uv run uvicorn backend.main:app`");
+    setStatus("offline — start the backend with ./start_backend.sh");
   }
 }
 bootstrap();

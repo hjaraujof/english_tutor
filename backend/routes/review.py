@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
-from fastapi import APIRouter, Depends, Request
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.analysis import compute_metrics
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
@@ -26,11 +30,18 @@ async def review_text(payload: ReviewRequest, state=Depends(_get_state)):
     llm = state.llm
     db = state.db
 
-    review = await llm.review(
-        transcript=payload.text,
-        native_language=config.user.native_language,
-        cefr_level=config.user.cefr_level,
-    )
+    try:
+        review = await llm.review(
+            transcript=payload.text,
+            native_language=config.user.native_language,
+            cefr_level=config.user.cefr_level,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("LLM review failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="LLM backend unavailable — is llama-server running?",
+        ) from exc
     review_dump = review.model_dump(by_alias=True)
     metrics = compute_metrics(text=payload.text, duration_seconds=0.0, segments=None)
 

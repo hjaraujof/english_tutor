@@ -80,7 +80,7 @@ Two processes:
 ./start_backend.sh
 ```
 
-Then open <http://127.0.0.1:8765>.
+Then open <http://127.0.0.1:8766>.
 
 ## Layout
 
@@ -124,6 +124,7 @@ vendor/llama.cpp/      Local clone (gitignored)
 |---|---|
 | `user.native_language`, `user.cefr_level` | Drives L1-interference targeting in the prompt. |
 | `llm.base_url` | Default `http://127.0.0.1:8080`. |
+| `server.host`, `server.port` | The address `start_backend.sh` binds. `HOST=... PORT=... ./start_backend.sh` overrides it for one run. |
 | `asr.model_size` | `distil-small.en`. `tiny.en` is 3x faster but transcribes learner errors less faithfully. |
 | `asr.compute_type` | `int8` on both CUDA and CPU. `int8_float16` is rejected on Pascal. |
 
@@ -131,12 +132,12 @@ vendor/llama.cpp/      Local clone (gitignored)
 
 ```bash
 # Smoke (audio path):
-curl -F "audio=@sample.webm" http://127.0.0.1:8765/api/sessions
+curl -F "audio=@sample.webm" http://127.0.0.1:8766/api/sessions
 
 # Smoke (text path):
 curl -d '{"text":"He go to school yesterday."}' \
      -H 'content-type: application/json' \
-     http://127.0.0.1:8765/api/review
+     http://127.0.0.1:8766/api/review
 
 # Tests:
 uv run --extra dev pytest                        # unit only (no server)

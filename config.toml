@@ -38,5 +38,5 @@ max_utterance_seconds = 30.0
 
 [server]
 host = "127.0.0.1"
-port = 8765
+port = 8766
 data_dir = "data"
