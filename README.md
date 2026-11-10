@@ -44,11 +44,9 @@ mkdir -p vendor/llama.cpp && git -C vendor/llama.cpp init -q && \
   git -C vendor/llama.cpp fetch --depth 1 https://github.com/ggerganov/llama.cpp \
       b97ebdc98f6053604a19d861c08d8087601b96e0 && \
   git -C vendor/llama.cpp checkout -q FETCH_HEAD
-nix-shell shell.nix --run "cd vendor/llama.cpp && \
-  cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -DGGML_CUDA_FORCE_MMQ=ON \
-                  -DCMAKE_CUDA_ARCHITECTURES=61 -DLLAMA_BUILD_SERVER=ON \
-                  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF && \
-  cmake --build build --config Release -j --target llama-server llama-bench"
+#    build_llama.sh runs the CMake build inside nix-shell, then roots every
+#    nix store path the binary loads under .nix-gc-roots/.
+./build_llama.sh
 
 # 2. Download the model (~2.4 GB).
 uvx --from huggingface_hub hf download bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF \
@@ -154,6 +152,10 @@ uv run --extra dev pytest -m integration         # requires llama-server running
   `shell.nix` requests four components instead: `cuda_nvcc`, `cuda_cudart`,
   `libcublas`, `cuda_cccl`. That set builds `ggml-cuda` cleanly and costs ~4.4 GB
   against the 11 GB the merged build exhausted before failing.
+- **`start_llm.sh` fails with "cannot execute: required file not found"?** A
+  `nix-collect-garbage` removed glibc or libstdc++ from under a binary that was
+  built without `build_llama.sh`. Run `rm -r vendor/llama.cpp/build` and then
+  `./build_llama.sh`, which roots those paths.
 - **VRAM tight?** Drop the 4B to IQ4_XS (~2.2 GB) or shrink `-c` from 4096 to 2048.
 - **`nix-shell` fails with "No space left on device"?** Check free disk before
   suspecting the channel. `shell.nix` asks for four CUDA components —
