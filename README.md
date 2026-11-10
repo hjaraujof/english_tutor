@@ -61,8 +61,9 @@ uv sync --extra dev
 # Add Phase-2 deps when you're ready for live conversation:
 #   uv sync --extra dev --extra phase2
 
-# 4. (Phase 2 only) Piper voice — install piper via nix or pip, then drop the
-#    voice model under models/piper/en_US-amy-medium.onnx (+ .onnx.json).
+# 4. (Phase 2 only) Piper voice. The phase2 extra installs the `piper` command
+#    into .venv, where start_backend.sh finds it. Put the voice model under
+#    models/piper/en_US-amy-medium.onnx (+ .onnx.json).
 ```
 
 ## Running

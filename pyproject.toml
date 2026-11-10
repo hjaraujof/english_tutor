@@ -18,6 +18,7 @@ phase2 = [
     "silero-vad>=6.2.1",
     "torch>=2.13.0",
     "torchaudio>=2.11.0",
+    "piper-tts>=1.8.0",
 ]
 dev = [
     "pytest>=9.1.1",
