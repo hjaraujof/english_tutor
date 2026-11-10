@@ -131,6 +131,17 @@ class LLMClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def context_size(self) -> int:
+        """Tokens that one llama-server slot holds."""
+        response = await self._client.get(f"{self.base_url}/props")
+        response.raise_for_status()
+        return int(response.json()["default_generation_settings"]["n_ctx"])
+
+    async def count_tokens(self, text: str) -> int:
+        response = await self._client.post(f"{self.base_url}/tokenize", json={"content": text})
+        response.raise_for_status()
+        return len(response.json()["tokens"])
+
     def _load_prompt(self, name: str) -> str:
         return (self.prompts_dir / name).read_text(encoding="utf-8")
 

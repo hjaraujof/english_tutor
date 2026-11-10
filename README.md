@@ -108,7 +108,7 @@ tests/
   conftest.py            TestClient app fixture: FakeASR/FakeLLM + tmp SQLite
   test_analysis.py       Fluency-metric unit tests (no LLM)
   test_db.py             SQLite round-trip, FK cascade, trend queries
-  test_live.py           History trim + live-WS malformed-frame guards
+  test_live.py           Token-budget history trim, reply interruption, live-session review
   test_llm_parse.py      Review-JSON fallback + correction-marker parsing
   test_llm_prompts.py    Integration; runs only with `-m integration`
   test_routes.py         Upload/review routes, orphan cleanup, trend filter

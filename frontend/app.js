@@ -202,6 +202,16 @@ function renderReview(container, data) {
           : ""
       }
       ${
+        review.live_corrections?.length
+          ? `<h3>Corrected during the conversation</h3><ul>${review.live_corrections
+              .map(
+                (correction) =>
+                  `<li><s>${escapeHtml(correction.original)}</s> → <em>${escapeHtml(correction.corrected)}</em>${correction.reason ? ` — ${escapeHtml(correction.reason)}` : ""}</li>`
+              )
+              .join("")}</ul>`
+          : ""
+      }
+      ${
         review.fluency_notes?.length
           ? `<h3>Fluency notes</h3><ul>${review.fluency_notes
               .map((note) => `<li>${escapeHtml(note.observation)} <em>${escapeHtml(note.suggestion)}</em></li>`)
@@ -341,6 +351,10 @@ let liveStream = null;
 let liveProcessor = null;
 let liveSource = null;
 let liveAssistantTurn = null;
+let liveReplySource = null;
+// Counts the learner's speech starts. A reply decoded for an earlier count is
+// already interrupted and must not play.
+let liveSpeechCount = 0;
 
 function appendTurn(role, text) {
   const log = $("#liveLog");
@@ -365,14 +379,25 @@ function appendCorrection(correction) {
 async function playWavBytes(bytes) {
   if (!bytes || bytes.byteLength === 0) return;
   if (!liveAudioContext) liveAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const speechCountAtArrival = liveSpeechCount;
   try {
     const buffer = await liveAudioContext.decodeAudioData(bytes.slice(0));
+    if (speechCountAtArrival !== liveSpeechCount) return;
     const source = liveAudioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(liveAudioContext.destination);
     source.start();
+    liveReplySource = source;
   } catch (err) {
     console.warn("audio decode failed", err);
+  }
+}
+
+function stopReplyPlayback() {
+  liveSpeechCount++;
+  if (liveReplySource) {
+    try { liveReplySource.stop(); } catch {}
+    liveReplySource = null;
   }
 }
 
@@ -466,6 +491,8 @@ async function startLive() {
       const textEl = liveAssistantTurn.querySelector(".text");
       textEl.textContent += payload.text;
       $("#liveLog").scrollTop = $("#liveLog").scrollHeight;
+    } else if (payload.type === "speech_start") {
+      stopReplyPlayback();
     } else if (payload.type === "reply_end") {
       liveAssistantTurn = null;
     } else if (payload.type === "correction") {

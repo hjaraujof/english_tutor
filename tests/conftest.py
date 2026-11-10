@@ -63,6 +63,12 @@ class FakeLLM:
         for delta in ("Sounds ", "good."):
             yield delta
 
+    async def context_size(self) -> int:
+        return 4096
+
+    async def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
 
 class FailingLLM:
     """Simulates llama-server being down — the most common operational state."""

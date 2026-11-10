@@ -6,6 +6,7 @@ Wire protocol (server → client):
   text frames: {"type": "transcript", "text": "..."}
                 {"type": "reply_delta", "text": "..."}
                 {"type": "reply_end"}
+                {"type": "speech_start"}   the learner began to speak: stop any playback
                 {"type": "correction", "original": "...", "corrected": "...", "reason": "..."}
                 {"type": "latency", "asr_ms": ..., "llm_ms": ..., "tts_ms": ...}
                 {"type": "error", "detail": "..."}
@@ -19,12 +20,14 @@ Wire protocol (client → server):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import time
 from pathlib import Path
 
+import httpx
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -37,7 +40,11 @@ router = APIRouter()
 SAMPLE_RATE = 16000
 FRAME_MS = 32
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
-MAX_HISTORY_TURNS = 12
+LIVE_REPLY_MAX_TOKENS = 256
+# The chat template wraps each message in role markers that /tokenize on the
+# bare content does not count.
+MESSAGE_OVERHEAD_TOKENS = 8
+LLM_DOWN_DETAIL = "LLM backend unavailable — is llama-server running?"
 # While no speech is detected, only this many frames are retained as onset
 # context (covers the VAD's speech-pad rewind); prevents unbounded growth and
 # keeps idle time out of the transcribed utterance.
@@ -85,13 +92,156 @@ def _split_reply_and_correction(text: str) -> tuple[str, dict | None]:
     return re.sub(r"\n{3,}", "\n\n", reply).strip(), correction
 
 
-def _trim_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Bound history to the system message + the newest MAX_HISTORY_TURNS
-    complete user/assistant pairs so long conversations never overflow the
-    LLM context."""
-    if len(history) > 1 + 2 * MAX_HISTORY_TURNS:
-        return [history[0]] + history[-2 * MAX_HISTORY_TURNS:]
-    return history
+def _trim_history(
+    history: list[dict[str, str]], token_counts: list[int], budget: int
+) -> tuple[list[dict[str, str]], list[int]]:
+    """Drop the oldest turns until the prompt fits `budget` tokens. The system
+    message and the newest message always stay, and the kept turns start with
+    a user message."""
+    history = list(history)
+    token_counts = list(token_counts)
+    while (
+        sum(token_counts) + MESSAGE_OVERHEAD_TOKENS * len(token_counts) > budget
+        and len(history) > 2
+    ):
+        del history[1], token_counts[1]
+        if len(history) > 2 and history[1]["role"] == "assistant":
+            del history[1], token_counts[1]
+    return history, token_counts
+
+
+class _Conversation:
+    """The turns of one live session. Each turn runs as its own task, so the
+    receive loop keeps reading the microphone and can cancel a reply when the
+    learner speaks over it."""
+
+    def __init__(self, websocket: WebSocket, asr, llm, tts, system_prompt: str, system_tokens: int, budget: int) -> None:
+        self.websocket = websocket
+        self.asr = asr
+        self.llm = llm
+        self.tts = tts
+        self.budget = budget
+        self.history: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        self.token_counts: list[int] = [system_tokens]
+        self.user_turns: list[str] = []
+        self.live_corrections: list[dict] = []
+        self.total_speech_seconds = 0.0
+        self.learner_speaking = False
+        self.closing = False
+        self.reply_task: asyncio.Task | None = None
+
+    def interrupt_reply(self) -> None:
+        if self.reply_task is not None:
+            self.reply_task.cancel()
+
+    async def _send(self, payload: dict) -> None:
+        await self.websocket.send_text(json.dumps(payload))
+
+    async def _append(self, role: str, content: str) -> None:
+        """Add a message. A user message that follows a user message (the reply
+        between them was skipped or cut before its first token) joins the
+        earlier one, so roles keep alternating."""
+        joins_previous = role == "user" and self.history[-1]["role"] == "user"
+        if joins_previous:
+            content = f'{self.history[-1]["content"]} {content}'
+        tokens = await self.llm.count_tokens(content)
+        if joins_previous:
+            del self.history[-1], self.token_counts[-1]
+        self.history.append({"role": role, "content": content})
+        self.token_counts.append(tokens)
+
+    async def take_turn(self, utterance: np.ndarray, previous: asyncio.Task | None) -> None:
+        if previous is not None:
+            await asyncio.wait([previous])
+        try:
+            asr_started = time.perf_counter()
+            transcription = await _transcribe_pcm(self.asr, utterance)
+            asr_ms = int((time.perf_counter() - asr_started) * 1000)
+            if not transcription.strip():
+                return
+            self.user_turns.append(transcription)
+            self.total_speech_seconds += utterance.size / SAMPLE_RATE
+            await self._append("user", transcription)
+            await self._send({"type": "transcript", "text": transcription})
+            if self.learner_speaking or self.closing:
+                return
+            self.reply_task = asyncio.current_task()
+            try:
+                await self._reply(asr_ms)
+            finally:
+                self.reply_task = None
+        except Exception as exc:  # noqa: BLE001 — a failed turn must not end the session
+            logger.exception("live turn failed")
+            detail = LLM_DOWN_DETAIL if isinstance(exc, httpx.HTTPError) else str(exc)
+            with contextlib.suppress(Exception):
+                await self._send({"type": "error", "detail": detail})
+
+    async def _reply(self, asr_ms: int) -> None:
+        self.history, self.token_counts = _trim_history(self.history, self.token_counts, self.budget)
+        llm_started = time.perf_counter()
+        accumulated = ""
+        try:
+            async for delta in self.llm.chat_stream(self.history, max_tokens=LIVE_REPLY_MAX_TOKENS):
+                accumulated += delta
+                await self._send({"type": "reply_delta", "text": delta})
+        except asyncio.CancelledError:
+            if accumulated:
+                await self._append("assistant", accumulated)
+            # The socket is already gone when the cancel comes from a disconnect.
+            with contextlib.suppress(Exception):
+                await self._send({"type": "reply_end"})
+            raise
+        llm_ms = int((time.perf_counter() - llm_started) * 1000)
+
+        if accumulated:
+            await self._append("assistant", accumulated)
+        reply, correction = _split_reply_and_correction(accumulated)
+        await self._send({"type": "reply_end"})
+        if correction:
+            await self._send({"type": "correction", **correction})
+            self.live_corrections.append(correction)
+
+        tts_ms = 0
+        if self.tts is not None and reply and self.tts.is_available():
+            tts_started = time.perf_counter()
+            wav = await self.tts.synthesize(reply)
+            tts_ms = int((time.perf_counter() - tts_started) * 1000)
+            if wav:
+                await self.websocket.send_bytes(wav)
+
+        await self._send({"type": "latency", "asr_ms": asr_ms, "llm_ms": llm_ms, "tts_ms": tts_ms})
+
+
+async def _review_live_session(llm, config, conversation: _Conversation) -> dict:
+    """Grammar review of everything the learner said, so a live session lands
+    in the history with the same typed corrections as a recording. The
+    corrections the tutor spoke during the conversation stay beside it under
+    their own key."""
+    turn_count = len(conversation.user_turns)
+    try:
+        review = await llm.review(
+            transcript=" ".join(conversation.user_turns),
+            native_language=config.user.native_language,
+            cefr_level=config.user.cefr_level,
+        )
+        review_dump = review.model_dump(by_alias=True)
+    except httpx.HTTPError as exc:
+        logger.warning("live session review failed: %s", exc)
+        review_dump = {
+            "corrections": [],
+            "fluency_notes": [],
+            "vocabulary_suggestions": [],
+            "overall": {
+                "summary": (
+                    f"Live conversation: {turn_count} spoken turn(s). "
+                    "The grammar review did not run because llama-server did not answer."
+                ),
+                "strengths": [],
+                "next_focus": [],
+            },
+        }
+    review_dump["live_corrections"] = conversation.live_corrections
+    return review_dump
 
 
 @router.websocket("/ws/live")
@@ -113,11 +263,8 @@ async def live_socket(websocket: WebSocket):
         return
     state.live_active = True
 
-    # Collected across the conversation so the session survives the socket:
-    # spoken turns, live corrections, and total spoken seconds (for honest WPM).
-    user_turns: list[str] = []
-    live_corrections: list[dict] = []
-    total_speech_seconds = 0.0
+    conversation: _Conversation | None = None
+    turn_task: asyncio.Task | None = None
 
     try:
         try:
@@ -147,7 +294,19 @@ async def live_socket(websocket: WebSocket):
             native_language=config.user.native_language,
             cefr_level=config.user.cefr_level,
         )
-        history: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        try:
+            context_tokens = await llm.context_size()
+            system_tokens = await llm.count_tokens(system_prompt)
+        except httpx.HTTPError as exc:
+            logger.warning("live conversation could not reach the LLM: %s", exc)
+            await websocket.send_text(json.dumps({"type": "error", "detail": LLM_DOWN_DETAIL}))
+            return
+        conversation = _Conversation(
+            websocket, asr, llm, tts,
+            system_prompt=system_prompt,
+            system_tokens=system_tokens,
+            budget=context_tokens - LIVE_REPLY_MAX_TOKENS,
+        )
 
         audio_buffer: list[np.ndarray] = []
         pcm_residual = np.empty(0, dtype=np.float32)
@@ -190,58 +349,24 @@ async def live_socket(websocket: WebSocket):
                     if "start" in vad_event and not in_speech:
                         in_speech = True
                         speech_start_time = time.perf_counter()
+                        conversation.learner_speaking = True
+                        conversation.interrupt_reply()
+                        await websocket.send_text(json.dumps({"type": "speech_start"}))
                     if "end" in vad_event and in_speech:
                         utterance = np.concatenate(audio_buffer)
                         audio_buffer = []
                         in_speech = False
+                        conversation.learner_speaking = False
                         if speech_start_time is None:
                             continue
-                        asr_started = time.perf_counter()
-                        transcription = await _transcribe_pcm(asr, utterance)
-                        asr_ms = int((time.perf_counter() - asr_started) * 1000)
-                        if not transcription.strip():
-                            continue
-
-                        await websocket.send_text(json.dumps({"type": "transcript", "text": transcription}))
-                        history.append({"role": "user", "content": transcription})
-                        user_turns.append(transcription)
-                        total_speech_seconds += utterance.size / SAMPLE_RATE
-
-                        llm_started = time.perf_counter()
-                        accumulated = ""
-                        async for delta in llm.chat_stream(history, max_tokens=256):
-                            accumulated += delta
-                            await websocket.send_text(json.dumps({"type": "reply_delta", "text": delta}))
-                        llm_ms = int((time.perf_counter() - llm_started) * 1000)
-
-                        reply, correction = _split_reply_and_correction(accumulated)
-                        history.append({"role": "assistant", "content": accumulated})
-                        history = _trim_history(history)
-                        await websocket.send_text(json.dumps({"type": "reply_end"}))
-                        if correction:
-                            await websocket.send_text(json.dumps({"type": "correction", **correction}))
-                            live_corrections.append(correction)
-
-                        tts_ms = 0
-                        if tts is not None and reply and tts.is_available():
-                            tts_started = time.perf_counter()
-                            wav = await tts.synthesize(reply)
-                            tts_ms = int((time.perf_counter() - tts_started) * 1000)
-                            if wav:
-                                await websocket.send_bytes(wav)
-
-                        await websocket.send_text(json.dumps({
-                            "type": "latency",
-                            "asr_ms": asr_ms,
-                            "llm_ms": llm_ms,
-                            "tts_ms": tts_ms,
-                        }))
+                        turn_task = asyncio.create_task(conversation.take_turn(utterance, turn_task))
 
                 if in_speech and speech_start_time is not None:
                     if time.perf_counter() - speech_start_time > config.live.max_utterance_seconds:
                         audio_buffer = []
                         in_speech = False
                         speech_start_time = None
+                        conversation.learner_speaking = False
                         # VADIterator still holds triggered state after a forced
                         # cut; without a reset its next 'end' event would be
                         # dropped and the overflow would bleed into the next turn.
@@ -260,29 +385,18 @@ async def live_socket(websocket: WebSocket):
             pass
     finally:
         state.live_active = False
-        if user_turns:
-            transcript_text = " ".join(user_turns)
-            review_dump = {
-                "corrections": [
-                    {
-                        "type": "live",
-                        "original": item["original"],
-                        "corrected": item["corrected"],
-                        "explanation": item["reason"],
-                        "severity": "medium",
-                    }
-                    for item in live_corrections
-                ],
-                "fluency_notes": [],
-                "vocabulary_suggestions": [],
-                "overall": {
-                    "summary": f"Live conversation: {len(user_turns)} spoken turn(s).",
-                    "strengths": [],
-                    "next_focus": [],
-                },
-            }
-            metrics = compute_metrics(text=transcript_text, duration_seconds=total_speech_seconds)
+        if conversation is not None:
+            conversation.closing = True
+            conversation.interrupt_reply()
+            if turn_task is not None:
+                await asyncio.wait([turn_task])
+        if conversation is not None and conversation.user_turns:
+            transcript_text = " ".join(conversation.user_turns)
+            metrics = compute_metrics(
+                text=transcript_text, duration_seconds=conversation.total_speech_seconds
+            )
             try:
+                review_dump = await _review_live_session(llm, config, conversation)
                 await asyncio.to_thread(
                     lambda: db.insert_session(
                         kind="live",
