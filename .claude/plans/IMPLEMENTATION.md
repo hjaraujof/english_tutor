@@ -23,7 +23,9 @@ Source: the status review of 2026-11-10. The owner approved all three groups, in
 ## Group 3: code items, each with a test
 
 - [x] `/api/review` returns 503 when `llama-server` is down
-- [x] Live route: the learner can interrupt the tutor (server test passes; no run with a real microphone and speakers)
+- [x] Live route: the learner can interrupt the tutor (server test passes; the owner's microphone run in Chrome on 2026-11-10 confirmed it)
+- [x] Live route: on speakers the tutor interrupted itself in that run. The Converse tab has a Speakers switch, and the server ignores the microphone while a reply plays
+- [x] Live route: a browser disconnect during a turn ends the turn with no ERROR log and no reply
 - [x] Live route: trim history by tokens, not by turns (`/props` and `/tokenize` read from the pinned llama.cpp source, not called on a live server)
 - [x] Live route: the session gets a grammar review with typed corrections; spoken corrections stay under `live_corrections`
 - [x] `frontend/app.js`: the offline hint names `./start_backend.sh`
