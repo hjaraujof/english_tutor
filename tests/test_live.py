@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ from backend.asr import Transcription
 from backend.llm import Correction, OverallFeedback, Review
 from backend.routes import live as live_routes
 from backend.routes.live import MESSAGE_OVERHEAD_TOKENS, _Conversation, _trim_history
-from tests.conftest import FakeLLM
+from tests.conftest import FakeASR, FakeLLM
 
 
 def _fake_history(pairs: int) -> list[dict[str, str]]:
@@ -513,3 +514,100 @@ def test_second_concurrent_live_connection_is_rejected(client):
         first.send_text('{"type": "end"}')
         with pytest.raises(WebSocketDisconnect):
             first.receive_text()
+
+
+ECHO_LEVEL = 1000
+
+
+def _recording_vad(script: dict[int, dict]):
+    """A VADIterator stand-in that follows `script` and keeps the peak level of
+    every frame it was given, so a test can tell which audio reached the VAD."""
+    heard: list[float] = []
+
+    class RecordingVADIterator:
+        def __init__(self, model, sampling_rate, min_silence_duration_ms):
+            self.calls = 0
+
+        def __call__(self, frame):
+            self.calls += 1
+            heard.append(float(np.abs(frame).max()))
+            return script.get(self.calls)
+
+        def reset_states(self):
+            pass
+
+    return RecordingVADIterator, heard
+
+
+def test_microphone_is_ignored_while_a_reply_plays_on_speakers(client, monkeypatch):
+    # On speakers the microphone picks up the tutor's voice. The VAD would call
+    # frame 4 a speech start and the tutor would interrupt itself.
+    vad, heard = _recording_vad({1: {"start": 0}, 2: {"end": 1}, 4: {"start": 2}})
+    frame = _live_setup(client, monkeypatch, vad, FakeASR(), FakeLLM())
+    echo = np.full(512, ECHO_LEVEL, dtype=np.int16).tobytes()
+    tail = np.full(live_routes.PLAYBACK_TAIL_SAMPLES, ECHO_LEVEL, dtype=np.int16).tobytes()
+
+    with client.websocket_connect("/ws/live") as websocket:
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        _events_until(websocket, "latency")
+
+        websocket.send_text('{"type": "playback_start"}')
+        for _ in range(5):
+            websocket.send_bytes(echo)
+        websocket.send_text('{"type": "playback_end"}')
+        websocket.send_bytes(tail)
+        websocket.send_bytes(frame)
+        websocket.send_bytes(frame)
+        assert json.loads(websocket.receive_text())["type"] == "speech_start"
+        _end(websocket)
+
+    assert heard == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_reply_held_back_by_speech_is_sent_when_playback_discards_that_speech(client, monkeypatch):
+    # Utterance B starts while A is still in the ASR, so A gets no reply. A
+    # playback start then discards B. Nothing else would send the reply to A.
+    gate = threading.Event()
+    vad = _scripted_vad({1: {"start": 0}, 2: {"end": 1}, 3: {"start": 2}}, on_call={3: gate.set})
+    llm = RecordingLLM()
+    frame = _live_setup(
+        client, monkeypatch, vad, GatedASR(["I goes to the store yesterday."], gate), llm
+    )
+
+    with client.websocket_connect("/ws/live") as websocket:
+        for _ in range(3):
+            websocket.send_bytes(frame)
+        _events_until(websocket, "transcript")
+        websocket.send_text('{"type": "playback_start"}')
+        _events_until(websocket, "latency")
+        _end(websocket)
+
+    assert len(llm.reply_histories) == 1
+    assert llm.reply_histories[0][-1]["content"] == "I goes to the store yesterday."
+
+
+class ClosedWebSocket:
+    """A socket whose browser side is gone: every send raises."""
+
+    async def send_text(self, text: str) -> None:
+        raise WebSocketDisconnect(code=1006)
+
+
+def test_disconnect_during_a_turn_ends_it_without_an_error_or_a_reply(caplog):
+    llm = RecordingLLM()
+    conversation = _Conversation(
+        websocket=ClosedWebSocket(), asr=FakeASR(), llm=llm, tts=None,
+        system_prompt="sys", system_tokens=1, budget=1000,
+    )
+
+    async def one_turn():
+        await conversation.start_turn(np.zeros(16000, dtype=np.float32), None)
+
+    with caplog.at_level(logging.INFO, logger="backend.routes.live"):
+        asyncio.run(one_turn())
+
+    assert [record for record in caplog.records if record.levelno >= logging.ERROR] == []
+    assert llm.reply_histories == []
+    # The session review still needs what the learner said.
+    assert conversation.user_turns == ["I goes to the store yesterday."]

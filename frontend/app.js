@@ -356,6 +356,19 @@ let liveReplySource = null;
 // already interrupted and must not play.
 let liveSpeechCount = 0;
 
+const LIVE_SPEAKERS_KEY = "liveSpeakers";
+const liveSpeakers = $("#liveSpeakers");
+if (liveSpeakers) {
+  liveSpeakers.checked = localStorage.getItem(LIVE_SPEAKERS_KEY) !== "off";
+  liveSpeakers.addEventListener("change", () => {
+    localStorage.setItem(LIVE_SPEAKERS_KEY, liveSpeakers.checked ? "on" : "off");
+  });
+}
+
+function sendLiveEvent(type) {
+  if (liveSocket && liveSocket.readyState === WebSocket.OPEN) liveSocket.send(JSON.stringify({ type }));
+}
+
 function appendTurn(role, text) {
   const log = $("#liveLog");
   const turn = document.createElement("div");
@@ -388,6 +401,12 @@ async function playWavBytes(bytes) {
     source.connect(liveAudioContext.destination);
     source.start();
     liveReplySource = source;
+    // On speakers the microphone hears this reply, and the server would take
+    // it for the learner. The server ignores the microphone between the two events.
+    if (liveSpeakers && liveSpeakers.checked) {
+      sendLiveEvent("playback_start");
+      source.onended = () => sendLiveEvent("playback_end");
+    }
   } catch (err) {
     console.warn("audio decode failed", err);
   }

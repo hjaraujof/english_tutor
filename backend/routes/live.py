@@ -16,6 +16,10 @@ Wire protocol (client → server):
   binary frames: mono int16 PCM mic audio at 16 kHz, any frame size — the server
                  re-chunks internally to the VAD's required window
   text frames: {"type": "end"} to close
+               {"type": "playback_start"}   a reply began to play on speakers:
+                                            ignore the microphone, which now
+                                            carries the tutor's own voice
+               {"type": "playback_end"}     that reply stopped; listen again
 """
 from __future__ import annotations
 
@@ -44,6 +48,10 @@ LIVE_REPLY_MAX_TOKENS = 256
 # The chat template wraps each message in role markers that /tokenize on the
 # bare content does not count.
 MESSAGE_OVERHEAD_TOKENS = 8
+# After a reply stops playing, the capture path still delivers audio recorded
+# while it played (one ScriptProcessor block is 85 ms at 48 kHz) and the room
+# still carries its sound. This much microphone audio is dropped after the end.
+PLAYBACK_TAIL_SAMPLES = SAMPLE_RATE * 300 // 1000
 LLM_DOWN_DETAIL = "LLM backend unavailable — is llama-server running?"
 # While no speech is detected, only this many frames are retained as onset
 # context (covers the VAD's speech-pad rewind); prevents unbounded growth and
@@ -202,6 +210,11 @@ class _Conversation:
         return asr_ms
 
     async def _report_failure(self, exc: Exception) -> None:
+        if isinstance(exc, WebSocketDisconnect):
+            # Nobody is left to send a reply or an error to.
+            self.closing = True
+            logger.info("live turn ended: the browser disconnected")
+            return
         logger.error("live turn failed", exc_info=exc)
         detail = LLM_DOWN_DETAIL if isinstance(exc, httpx.HTTPError) else str(exc)
         with contextlib.suppress(Exception):
@@ -343,6 +356,8 @@ async def live_socket(websocket: WebSocket):
         pcm_residual = np.empty(0, dtype=np.float32)
         in_speech = False
         speech_start_time: float | None = None
+        reply_is_playing = False
+        tail_samples_left = 0
 
         while True:
             message = await websocket.receive()
@@ -356,13 +371,32 @@ async def live_socket(websocket: WebSocket):
                     continue
                 if payload.get("type") == "end":
                     break
+                if payload.get("type") == "playback_start":
+                    reply_is_playing = True
+                    audio_buffer = []
+                    pcm_residual = np.empty(0, dtype=np.float32)
+                    vad.reset_states()
+                    if in_speech:
+                        in_speech = False
+                        speech_start_time = None
+                        conversation.learner_speaking = False
+                        # The discarded speech may have held back a reply that
+                        # no later turn will now send.
+                        turn_task = conversation.start_turn(None, turn_task)
+                elif payload.get("type") == "playback_end" and reply_is_playing:
+                    reply_is_playing = False
+                    tail_samples_left = PLAYBACK_TAIL_SAMPLES
                 continue
 
             data = message.get("bytes")
-            if not data or len(data) % 2 != 0:
+            if not data or len(data) % 2 != 0 or reply_is_playing:
                 continue
 
             incoming = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            if tail_samples_left:
+                dropped = min(incoming.size, tail_samples_left)
+                incoming = incoming[dropped:]
+                tail_samples_left -= dropped
             if incoming.size == 0:
                 continue
             pcm_residual = np.concatenate([pcm_residual, incoming])

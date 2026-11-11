@@ -193,6 +193,14 @@ canvas { width: 100%; height: auto; display: block; }
   color: var(--warn);
   font-size: 0.85rem;
 }
+.live-option {
+  color: var(--muted);
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
 .live-latency {
   margin-top: 0.6rem;
   color: var(--muted);

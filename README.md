@@ -81,6 +81,12 @@ Two processes:
 
 Then open <http://127.0.0.1:8766>.
 
+The Converse tab has a **Speakers** switch, on by default. On speakers the
+microphone hears the tutor, and the server would take that sound for your speech
+and cut the reply. With the switch on, the server ignores the microphone while a
+reply plays and for 300 ms after it, so you cannot interrupt the tutor. Turn the
+switch off with headphones, and you can speak over a reply to stop it.
+
 ## Layout
 
 ```
@@ -107,7 +113,7 @@ tests/
   conftest.py            TestClient app fixture: FakeASR/FakeLLM + tmp SQLite
   test_analysis.py       Fluency-metric unit tests (no LLM)
   test_db.py             SQLite round-trip, FK cascade, trend queries
-  test_live.py           Token-budget history trim, reply interruption, live-session review
+  test_live.py           Token-budget history trim, reply interruption, speakers mute, live-session review
   test_llm_parse.py      Review-JSON fallback + correction-marker parsing
   test_llm_prompts.py    Integration; runs only with `-m integration`
   test_routes.py         Upload/review routes, orphan cleanup, trend filter
